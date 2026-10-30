@@ -71,3 +71,40 @@
   gradle :app:assembleDebug
   ```
   Output APK: `app/build/outputs/apk/debug/app-debug.apk`
+
+---
+
+## 6. Release Keystore Generation, Signed Release APK & GitHub Actions CI/CD
+
+### A. Generate Release Keystore (`my-upload-key.jks`) & Build Signed Release APK Locally
+The project's `app/build.gradle.kts` `signingConfigs.release` block uses:
+- **Keystore Path**: `KEYSTORE_PATH` (defaults to `${rootDir}/my-upload-key.jks`)
+- **Key Alias**: `upload`
+- **Passwords**: `STORE_PASSWORD` and `KEY_PASSWORD` environment variables
+
+Run the included script to generate `my-upload-key.jks` (2048-bit RSA, PKCS12, validity 10,000 days) and build the signed Release APK in one step:
+```bash
+chmod +x scripts/generate-release-key.sh scripts/build-release-apk.sh
+./scripts/build-release-apk.sh
+```
+- **Generated Keystore**: `my-upload-key.jks`
+- **Signed Release APK**: `app/build/outputs/apk/release/app-release.apk`
+
+### B. GitHub Actions CI/CD Pipeline (`.github/workflows/android-ci-cd.yml`)
+Every push/PR to `main`/`master`, manual `workflow_dispatch`, or version tag (`v*.*.*`) executes:
+1. **`test-and-lint` Job**: Runs the full local JVM & Robolectric test suite (`gradle :app:testDebugUnitTest`) and uploads the HTML test report artifact.
+2. **`build-release` Job**:
+   - Decodes `RELEASE_KEYSTORE_BASE64` from GitHub Actions Secrets (or generates `my-upload-key.jks` automatically if secrets are not yet configured).
+   - Builds both the signed Release APK (`:app:assembleRelease`) and Android App Bundle (`:app:bundleRelease`).
+   - Uploads `voiceshield-ai-release-apk` and `voiceshield-ai-release-aab` artifacts, and automatically attaches them to a GitHub Release when pushing a `v*.*.*` tag.
+
+### C. Configuring GitHub Actions Repository Secrets (Optional for Custom Key)
+To use your own persistent `my-upload-key.jks` in GitHub Actions:
+1. Base64-encode the generated keystore:
+   ```bash
+   base64 -w 0 my-upload-key.jks
+   ```
+2. In your GitHub repository **Settings → Secrets and variables → Actions**, add:
+   - `RELEASE_KEYSTORE_BASE64`: Base64 output from step 1
+   - `STORE_PASSWORD`: Your keystore password
+   - `KEY_PASSWORD`: Your key password
