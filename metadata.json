@@ -1,0 +1,6 @@
+{
+  "name": "VoiceShield AI",
+  "description": "Offline-first AI call screening, spam protection, expressive local TTS voice receptionist, and AES-GCM encrypted voice message assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

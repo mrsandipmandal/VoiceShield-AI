@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">VoiceShield AI</string>
+    <string name="notification_channel_messages_name">Voice Messages</string>
+    <string name="notification_channel_messages_desc">Notifications for newly recorded caller voice messages</string>
+    <string name="notification_channel_screening_name">Call Screening Alerts</string>
+    <string name="notification_channel_screening_desc">Real-time spam and unknown caller screening notifications</string>
+    <string name="notification_new_voice_message_title">New Voice Message</string>
+    <string name="notification_action_listen">Listen</string>
+    <string name="notification_action_open">Open Message</string>
+    <string name="notification_action_delete">Delete</string>
+    <string name="default_greeting_bn">নমস্কার! আপনি VoiceShield AI-এর মাধ্যমে যোগাযোগ করেছেন। অনুগ্রহ করে আপনার নাম এবং কী কারণে ফোন করেছেন তা বলুন। আপনার বার্তা রেকর্ড করা হতে পারে। সম্মতি থাকলে নির্দেশ অনুসরণ করুন।</string>
+    <string name="default_greeting_en">Hello! This is an automated call assistant. Please state your name and the reason for your call. Your message may be recorded. Please follow the consent instructions before continuing.</string>
+    <string name="default_greeting_hi">नमस्ते! आप VoiceShield AI स्वचालित कॉल सहायक से जुड़े हैं। कृपया अपना नाम और कॉल करने का कारण बताएं। आपका संदेश रिकॉर्ड किया जा सकता है। सहमति के लिए निर्देशों का पालन करें।</string>
+</resources>
