@@ -1,9 +1,12 @@
 package com.example.feature.settings
 
 import android.Manifest
+import android.app.role.RoleManager
+import android.content.Context
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -24,10 +27,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -39,7 +46,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.example.domain.model.StorageInspectionInfo
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -68,6 +81,11 @@ fun SettingsScreen(
     onUpdateSettings: ((VoiceShieldSettings) -> VoiceShieldSettings) -> Unit,
     onResetDefaults: () -> Unit
 ) {
+    val context = LocalContext.current
+    val roleLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { _ -> }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -91,7 +109,40 @@ fun SettingsScreen(
             }
         )
 
-        // Group 1: Call Answering & Timing (autoAnswerEnabled, answerDelaySeconds, maxRecordingDuration, silenceTimeout, maxCallDuration, repeatGreetingCount)
+        // Default Phone App Role (Kept as an option in settings per request)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Default Phone App (Dialer Option)", style = MaterialTheme.typography.titleMedium, color = EmeraldShield)
+                Text(
+                    text = "Keep VoiceShield as your Default Phone App if you want incoming cellular calls to be answered automatically by InCallService after the configured ring delay.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Button(
+                    onClick = {
+                        val roleManager = context.getSystemService(Context.ROLE_SERVICE) as? RoleManager
+                        if (roleManager != null && roleManager.isRoleAvailable(RoleManager.ROLE_DIALER)) {
+                            val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER)
+                            roleLauncher.launch(intent)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldShield),
+                    modifier = Modifier.testTag("request_default_dialer_setting_btn")
+                ) {
+                    Icon(Icons.Default.VerifiedUser, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Set as Default Phone App (Optional)")
+                }
+            }
+        }
+
+        // Group 1: Call Answering & Timing (applyToAllCalls, autoAnswerEnabled, answerDelaySeconds, maxRecordingDuration, silenceTimeout, maxCallDuration, repeatGreetingCount)
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
             modifier = Modifier.fillMaxWidth()
@@ -103,17 +154,23 @@ fun SettingsScreen(
                 Text("1. Call Answering & Timing Limits", style = MaterialTheme.typography.titleMedium, color = EmeraldShield)
 
                 SettingToggleRow(
+                    title = "applyToAllCalls (Universal Protection)",
+                    subtitle = "When Shield is ON, automatically answer all incoming calls with AI Receptionist",
+                    checked = settings.applyToAllCalls,
+                    onCheckedChange = { v -> onUpdateSettings { it.copy(applyToAllCalls = v) } }
+                )
+                SettingToggleRow(
                     title = "autoAnswerEnabled",
-                    subtitle = "Automatically answer unknown calls routed to the AI receptionist",
+                    subtitle = "Automatically answer calls routed to the AI receptionist",
                     checked = settings.autoAnswerEnabled,
                     onCheckedChange = { v -> onUpdateSettings { it.copy(autoAnswerEnabled = v) } }
                 )
                 SettingSliderRow(
-                    title = "answerDelaySeconds",
+                    title = "answerDelaySeconds (Dynamic Slider)",
                     valueLabel = "${settings.answerDelaySeconds}s",
                     value = settings.answerDelaySeconds.toFloat(),
-                    range = 0f..15f,
-                    onValueChange = { v -> onUpdateSettings { it.copy(answerDelaySeconds = v.toInt()) } }
+                    range = 1f..30f,
+                    onValueChange = { v -> onUpdateSettings { it.copy(answerDelaySeconds = v.toInt().coerceIn(1, 30)) } }
                 )
                 SettingSliderRow(
                     title = "maxRecordingDuration",
@@ -468,15 +525,69 @@ fun PermissionsAndCompatibilityScreen(
  * Screen 12: Privacy and Data Management — Android Keystore AES-256-GCM encryption verification,
  * retention controls, zero-cloud guarantee, and instant data wipe actions.
  */
+/**
+ * Screen 12: Privacy & Data Management — Physical storage location inspection,
+ * Android Keystore AES-256-GCM encryption verification, retention controls, and zero-trust complete data wipe.
+ */
 @Composable
 fun PrivacyAndDataScreen(
     settings: VoiceShieldSettings,
-    totalMessagesCount: Int,
-    totalScreenedCallsCount: Int,
+    storageInfo: StorageInspectionInfo,
     onRunRetentionCleanup: () -> Unit,
     onDeleteAllRecordings: () -> Unit,
-    onClearCallHistory: () -> Unit
+    onClearCallHistory: () -> Unit,
+    onWipeAllUserData: () -> Unit
 ) {
+    var showWipeConfirmDialog by remember { mutableStateOf(false) }
+
+    if (showWipeConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showWipeConfirmDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = CrimsonSpam
+                )
+            },
+            title = {
+                Text(
+                    text = "সব ডেটা মুছে ফেলতে চান? (Wipe All Data?)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "এটি সমস্ত এনক্রিপ্ট করা ভয়েস রেকর্ডিং, কল স্ক্রীনিং লগ, কাস্টম কলার রুলস স্থায়ীভাবে মুছে দেবে এবং অ্যাপ্লিকেশন সেটিংস ফ্যাক্টরি ডিফল্টে রিসেট করবে। এটি অপরিবর্তনীয়।\n\nThis permanently erases all audio recordings from disk, clears all database tables, and resets settings to default.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showWipeConfirmDialog = false
+                        onWipeAllUserData()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonSpam),
+                    modifier = Modifier.testTag("confirm_wipe_all_btn")
+                ) {
+                    Icon(Icons.Default.DeleteForever, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("হ্যাঁ, সব মুছুন (Yes, Wipe All)")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showWipeConfirmDialog = false },
+                    modifier = Modifier.testTag("cancel_wipe_all_btn")
+                ) {
+                    Text("বাতিল (Cancel)")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -486,39 +597,138 @@ fun PrivacyAndDataScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         SectionHeader(
-            title = "Privacy & Security Architecture",
-            subtitle = "100% Offline-First • Hardware-backed Keystore encryption • Zero cloud telemetry"
+            title = "ডেটা স্টোরেজ ও সম্পূর্ণ মোছার ব্যবস্থা (Data Storage & Erasure)",
+            subtitle = "100% Offline-First • Device Local Storage • Zero Cloud Telemetry"
         )
 
+        // 1. Storage Location Inspection Card (data kothay thake)
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = MaterialTheme.shapes.medium,
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, EmeraldShield.copy(alpha = 0.5f), MaterialTheme.shapes.medium)
+                .border(1.dp, CyanTelemetry.copy(alpha = 0.5f), MaterialTheme.shapes.medium)
+                .testTag("storage_inspection_card")
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Lock, contentDescription = null, tint = EmeraldShield)
-                    Spacer(Modifier.width(8.dp))
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Storage, contentDescription = null, tint = CyanTelemetry)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "ডেটা কোথায় থাকে (Storage Locations)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = CyanTelemetry
+                        )
+                    }
                     Text(
-                        "Android Keystore AES-256-GCM Encryption Active",
-                        style = MaterialTheme.typography.titleMedium,
+                        text = "মোট: ${storageInfo.formattedTotalStorageSize}",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
                         color = EmeraldShield
                     )
                 }
+
                 Text(
-                    "• Voice recordings are encrypted at rest with a 256-bit AES-GCM key bound to AndroidKeyStore (VoiceShieldRecordingMasterKey_v1).\n" +
-                        "• No cloud TTS, STT, or analytics servers are contacted.\n" +
-                        "• Recording disclosure and caller consent status are stored alongside every message.\n" +
-                        "• Secure file deletion overwrites encrypted bytes with zeros before unlinking.",
-                    style = MaterialTheme.typography.bodyMedium
+                    text = "আপনার সমস্ত তথ্য শুধুমাত্র আপনার ডিভাইসের ইন্টারনাল মেমরিতে সুরক্ষিত থাকে। কোনো ক্লাউড সার্ভারে কোনো ডেটা পাঠানো হয় না।",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Item A: Voice Recordings Directory
+                StorageLocationItem(
+                    label = "১. ভয়েস মেসেজ অডিও ফাইল (Voice Recordings Directory)",
+                    path = storageInfo.voiceMessagesDirPath,
+                    details = "${storageInfo.voiceMessagesFileCount} টি ফাইল • সাইজ: ${storageInfo.formattedVoiceMessagesSize} • AES-256-GCM এনক্রিপ্টেড (.wav.enc)",
+                    tint = EmeraldShield
+                )
+
+                // Item B: SQLite Database
+                StorageLocationItem(
+                    label = "২. রুম ডাটাবেস (Room SQLite Database)",
+                    path = storageInfo.databasePath,
+                    details = "সাইজ: ${storageInfo.formattedDbSize} • ${storageInfo.totalRecordedMessagesCount} টি মেসেজ, ${storageInfo.totalScreenedCallsCount} টি কল হিস্ট্রি, ${storageInfo.totalCallerRulesCount} টি কলার রুলস",
+                    tint = CyanTelemetry
+                )
+
+                // Item C: Settings DataStore
+                StorageLocationItem(
+                    label = "৩. সেটিংস ফাইল (Preferences DataStore)",
+                    path = storageInfo.settingsDataStorePath,
+                    details = "সাইজ: ${storageInfo.formattedDataStoreSize} • অটো-অ্যানসার টাইমার, ভয়েস মোড ও SIP কনফিগারেশন",
+                    tint = AmberWarning
+                )
+
+                // Item D: AI Voice Models
+                StorageLocationItem(
+                    label = "৪. অফলাইন এআই ভয়েস মডেল (Sherpa-ONNX Models)",
+                    path = storageInfo.voiceModelsDirPath,
+                    details = "${storageInfo.voiceModelsFileCount} টি মডেল ফাইল • সাইজ: ${storageInfo.formattedVoiceModelsSize} • বাংলা, হিন্দি ও ইংরেজি ভয়েস",
+                    tint = CyanTelemetry
+                )
+
+                // Item E: Android Keystore Master Key
+                StorageLocationItem(
+                    label = "৫. হার্ডওয়্যার এনক্রিপশন কি (Android KeyStore)",
+                    path = "AndroidKeyStore://${storageInfo.keystoreKeyAlias}",
+                    details = "অ্যালগরিদম: ${storageInfo.encryptionAlgorithm} • রুট ছাড়া ডিভাইস থেকেও অডিও অ্যাক্সেস অসম্ভব",
+                    tint = EmeraldShield
                 )
             }
         }
 
+        // 2. Destructive Complete Wipe Action (moch sob data)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, CrimsonSpam.copy(alpha = 0.5f), MaterialTheme.shapes.medium)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.DeleteForever, contentDescription = null, tint = CrimsonSpam)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "সব ডেটা মুছুন (Complete Data Wipe)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = CrimsonSpam
+                    )
+                }
+
+                Text(
+                    text = "এক ক্লিকে সমস্ত অডিও ফাইল মেমরি থেকে নিশ্চিহ্ন করুন, ডাটাবেস টেবিল খালি করুন এবং সেটিংস ফ্যাক্টরি ডিফল্টে ফিরিয়ে আনুন।",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Button(
+                    onClick = { showWipeConfirmDialog = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonSpam),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("wipe_all_data_btn")
+                ) {
+                    Icon(Icons.Default.DeleteForever, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("সব ডেটা মুছুন (Wipe All Data Now)", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // 3. Individual Fine-Grained Controls
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             modifier = Modifier.fillMaxWidth()
@@ -527,44 +737,73 @@ fun PrivacyAndDataScreen(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Data Retention & Wipe Controls", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Stored Encrypted Messages: $totalMessagesCount (Max limit: ${settings.maximumStoredMessages})\n" +
-                        "Auto-Delete Retention Policy: ${settings.messageAutoDeleteDays} days\n" +
-                        "Screened Call History Entries: $totalScreenedCallsCount",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("পৃথকভাবে ডেটা মুছে ফেলার বিকল্প (Individual Controls)", style = MaterialTheme.typography.titleMedium)
 
-                Button(
+                OutlinedButton(
                     onClick = onRunRetentionCleanup,
-                    colors = ButtonDefaults.buttonColors(containerColor = CyanTelemetry),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.Default.CleaningServices, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Run Expired Recording Cleanup Now")
+                    Text("মেয়াদোত্তীর্ণ রেকর্ডিং মুছুন (${settings.messageAutoDeleteDays} দিনের পুরনো)")
                 }
 
                 OutlinedButton(
                     onClick = onClearCallHistory,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Wipe Screened Call Log ($totalScreenedCallsCount entries)")
+                    Text("কল হিস্ট্রি মুছুন (${storageInfo.totalScreenedCallsCount} টি এন্ট্রি)")
                 }
 
                 Button(
                     onClick = onDeleteAllRecordings,
-                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonSpam),
+                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonSpam.copy(alpha = 0.85f)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("privacy_wipe_all_recordings_btn")
                 ) {
                     Icon(Icons.Default.DeleteForever, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("Zero-Wipe & Delete All Voice Recordings")
+                    Text("শুধু ভয়েস রেকর্ডিং মুছুন (${storageInfo.totalRecordedMessagesCount} টি মেসেজ)")
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StorageLocationItem(
+    label: String,
+    path: String,
+    details: String,
+    tint: androidx.compose.ui.graphics.Color
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+            .padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Folder, contentDescription = null, tint = tint, modifier = Modifier.padding(end = 6.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        Text(
+            text = path,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            color = tint
+        )
+        Text(
+            text = details,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

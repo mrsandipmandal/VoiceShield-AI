@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.telecom.Call
 import android.telecom.Connection
 import android.telecom.TelecomManager
 import androidx.core.content.ContextCompat
@@ -36,6 +37,7 @@ import com.example.domain.model.ReceptionistStage
 import com.example.domain.model.RecordingStatus
 import com.example.domain.model.SipRegistrationState
 import com.example.domain.model.SpamClassification
+import com.example.domain.model.StorageInspectionInfo
 import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceShieldSettings
 import com.example.domain.usecase.ScreeningEvaluationResult
@@ -56,6 +58,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
@@ -789,7 +792,91 @@ class VoiceShieldRepository(
     suspend fun deleteAllMessagesAndFiles() {
         val all = dao.getRecentMessages(10000)
         all.forEach { cryptoManager.secureDeleteFile(it.encryptedFilePath) }
+        val voicemailsDir = audioController.getEncryptedRecordingsDir()
+        voicemailsDir.listFiles()?.forEach { file ->
+            cryptoManager.secureDeleteFile(file.absolutePath)
+        }
         dao.deleteAllMessages()
+    }
+
+    /**
+     * Inspects physical storage paths, file sizes, and database records across Android data directories.
+     */
+    fun inspectStorage(
+        messagesCount: Int = -1,
+        callsCount: Int = -1,
+        rulesCount: Int = -1
+    ): StorageInspectionInfo {
+        // 1. Room SQLite Database
+        val dbFile = context.getDatabasePath("voiceshield_database.db")
+        val walFile = File("${dbFile.absolutePath}-wal")
+        val shmFile = File("${dbFile.absolutePath}-shm")
+        var dbSize = if (dbFile.exists()) dbFile.length() else 0L
+        if (walFile.exists()) dbSize += walFile.length()
+        if (shmFile.exists()) dbSize += shmFile.length()
+
+        // 2. Encrypted voice messages directory
+        val voicemailsDir = audioController.getEncryptedRecordingsDir()
+        val voicemailFiles = voicemailsDir.listFiles()?.filter { it.isFile } ?: emptyList()
+        val voicemailsSize = voicemailFiles.sumOf { it.length() }
+
+        // 3. Settings DataStore file
+        val dataStoreFile = File(context.filesDir, "datastore/voiceshield_settings.preferences_pb")
+        val dataStoreSize = if (dataStoreFile.exists()) dataStoreFile.length() else 0L
+
+        // 4. Offline voice models directory
+        val modelsDir = ttsEngine.getModelsDirectory()
+        val modelFiles = modelsDir.listFiles()?.filter { it.isFile } ?: emptyList()
+        val modelsSize = modelFiles.sumOf { it.length() }
+
+        return StorageInspectionInfo(
+            databasePath = dbFile.absolutePath,
+            databaseSizeBytes = dbSize,
+            voiceMessagesDirPath = voicemailsDir.absolutePath,
+            voiceMessagesFileCount = voicemailFiles.size,
+            voiceMessagesSizeBytes = voicemailsSize,
+            settingsDataStorePath = dataStoreFile.absolutePath,
+            settingsDataStoreSizeBytes = dataStoreSize,
+            voiceModelsDirPath = modelsDir.absolutePath,
+            voiceModelsFileCount = modelFiles.size,
+            voiceModelsSizeBytes = modelsSize,
+            keystoreKeyAlias = "VoiceShieldRecordingMasterKey_v1",
+            totalRecordedMessagesCount = if (messagesCount >= 0) messagesCount else 0,
+            totalScreenedCallsCount = if (callsCount >= 0) callsCount else 0,
+            totalCallerRulesCount = if (rulesCount >= 0) rulesCount else 0
+        )
+    }
+
+    /**
+     * Complete zero-trust user data erasure:
+     * - Deletes and overwrites all encrypted voicemail files from disk
+     * - Clears voice_messages, screened_calls, and caller_rules database tables
+     * - Resets DataStore preferences to factory defaults
+     * - Cancels all active Android notifications
+     */
+    suspend fun wipeAllUserData(): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            // 1. Physically delete all encrypted voicemails from filesystem
+            val voicemailsDir = audioController.getEncryptedRecordingsDir()
+            voicemailsDir.listFiles()?.forEach { file ->
+                cryptoManager.secureDeleteFile(file.absolutePath)
+            }
+
+            // 2. Clear all Room tables
+            dao.deleteAllMessages()
+            dao.clearScreenedCalls()
+            dao.clearAllCallerRules()
+
+            // 3. Reset DataStore settings to default
+            settingsDataStore.resetToDefaults()
+
+            // 4. Cancel active notifications
+            notificationManager.cancelAllNotifications()
+
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     suspend fun cleanupExpiredRecordings(retentionDays: Int): Int {
@@ -933,5 +1020,237 @@ class VoiceShieldRepository(
             modelId = s.voiceModel
         )
         return ttsEngine.speakAndSynthesize(text = text, config = cfg, playAudioOutLoud = true)
+    }
+
+    suspend fun previewLanguageGreeting(lang: VoiceLanguage): TtsSynthesisResult {
+        val s = settingsFlow.first()
+        val sampleText = when (lang) {
+            VoiceLanguage.BENGALI_IN ->
+                "নমস্কার! আমি একটি Automated Personal Assistant। আপনি যাঁর সঙ্গে যোগাযোগ করতে চাইছেন, তিনি এখন ফোন ধরতে পারছেন না। অনুগ্রহ করে আপনার নাম এবং বার্তাটি বলুন।"
+            VoiceLanguage.ENGLISH_IN ->
+                "Hello! I am an Automated Personal Assistant. The person you are calling is currently unavailable. Please state your name and message after the tone."
+            VoiceLanguage.HINDI_IN ->
+                "नमस्ते! मैं एक ऑटोमेटेड पर्सनल असिस्टेंट हूँ। आप जिनसे संपर्क करना चाहते हैं वे अभी उपलब्ध नहीं हैं। कृपया अपना नाम और संदेश रिकॉर्ड करें।"
+        }
+        val cfg = TtsSynthesisConfig(
+            language = lang,
+            gender = s.voiceGender,
+            mood = s.voiceMood,
+            speed = s.speechRate,
+            pitch = s.speechPitch,
+            volume = s.speechVolume,
+            pauseDurationMs = s.pauseDurationMs,
+            sentenceEmphasis = s.sentenceEmphasis,
+            modelId = s.voiceModel
+        )
+        return ttsEngine.speakAndSynthesize(text = sampleText, config = cfg, playAudioOutLoud = true)
+    }
+
+    /**
+     * Handles automated receptionist session for a cellular call answered via InCallService (Default Dialer).
+     * Automatically plays TTS greeting, captures caller voice message, enforces silence timeout/max duration,
+     * encrypts with AES-256-GCM, saves to Room database, and sends notification to listen.
+     */
+    fun handleCellularInCallReceptionist(call: Call) {
+        activeReceptionistJob?.cancel()
+        activeReceptionistJob = repoScope.launch {
+            stopRecordingEarlyFlag = false
+            val settings = settingsFlow.first()
+            val rawNumber = call.details?.handle?.schemeSpecificPart.orEmpty().ifBlank { "Unknown Cellular Caller" }
+            val eval = screeningEngine.evaluateCall(
+                rawNumber = rawNumber,
+                settings = settings,
+                callerRules = dao.getAllCallerRulesSnapshot(),
+                recentCallsFromNumber = dao.getRecentCallsFromNumber(rawNumber, System.currentTimeMillis() - 300_000L)
+            )
+
+            val logs = mutableListOf<String>()
+            fun appendCellLog(entry: String) {
+                logs.add(entry)
+                _receptionistSession.value = _receptionistSession.value.copy(statusLog = logs.toList())
+            }
+
+            _receptionistSession.value = ReceptionistSessionState(
+                isActive = true,
+                callerNumber = eval.displayNumber,
+                callerName = eval.contactName ?: "Cellular Caller",
+                transportLabel = "Mode 1: Cellular Call (Default Dialer)",
+                isSimulatedCall = false,
+                stage = ReceptionistStage.ANSWERING_CALL,
+                statusLog = listOf("Incoming cellular call answered by VoiceShield AI Receptionist.")
+            )
+
+            // Turn on speakerphone so audio is clear
+            VoiceShieldInCallService.toggleSpeakerphone(true)
+            delay(500L)
+
+            // 1. Play Greeting
+            if (settings.greetingEnabled) {
+                _receptionistSession.value = _receptionistSession.value.copy(
+                    stage = ReceptionistStage.PLAYING_TTS_GREETING
+                )
+                val baseGreeting = if (eval.isSavedContact) {
+                    settings.knownCallerGreetingText
+                } else {
+                    settings.greetingText
+                }.ifBlank {
+                    when (settings.language) {
+                        VoiceLanguage.BENGALI_IN ->
+                            "নমস্কার! আমি একটি Automated Personal Assistant। আপনি যাঁর সঙ্গে যোগাযোগ করতে চাইছেন, তিনি এখন ফোন ধরতে পারছেন না। অনুগ্রহ করে আপনার নাম এবং বার্তাটি বলুন।"
+                        VoiceLanguage.ENGLISH_IN ->
+                            "Hello! I am an Automated Personal Assistant. The person you are calling is currently unavailable. Please state your name and message after the tone."
+                        VoiceLanguage.HINDI_IN ->
+                            "नमस्ते! मैं एक ऑटोमेटेड पर्सनल असिस्टेंट हूँ। आप जिनसे संपर्क करना चाहते हैं वे अभी उपलब्ध नहीं हैं। कृपया अपना नाम और संदेश रिकॉर्ड करें।"
+                    }
+                }
+
+                val fullGreeting = if (settings.recordingDisclosureEnabled) {
+                    val disclosure = when (settings.language) {
+                        VoiceLanguage.BENGALI_IN -> " (এই বার্তাটি রেকর্ড করা হবে।)"
+                        VoiceLanguage.ENGLISH_IN -> " (This message will be recorded.)"
+                        VoiceLanguage.HINDI_IN -> " (यह संदेश रिकॉर्ड किया जाएगा।)"
+                    }
+                    "$baseGreeting$disclosure"
+                } else {
+                    baseGreeting
+                }
+
+                appendCellLog("Playing offline ${settings.language.displayName} greeting to caller...")
+                ttsEngine.speakAndSynthesize(
+                    text = fullGreeting,
+                    config = TtsSynthesisConfig(
+                        language = settings.language,
+                        gender = settings.voiceGender,
+                        mood = settings.voiceMood,
+                        speed = settings.speechRate,
+                        pitch = settings.speechPitch,
+                        volume = settings.speechVolume,
+                        pauseDurationMs = settings.pauseDurationMs,
+                        sentenceEmphasis = settings.sentenceEmphasis,
+                        modelId = settings.voiceModel
+                    ),
+                    playAudioOutLoud = true
+                )
+                delay(600L)
+            }
+
+            // 2. Record Caller Voice
+            _receptionistSession.value = _receptionistSession.value.copy(
+                stage = ReceptionistStage.RECORDING_CALLER_AUDIO,
+                consentGranted = true
+            )
+            appendCellLog("Recording caller voice message (Max ${settings.maxRecordingDuration}s, Silence ${settings.silenceTimeout}s)...")
+
+            val messageId = UUID.randomUUID().toString().take(12)
+            val hasRecordPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            val maxRecSec = minOf(settings.maxRecordingDuration, settings.maxCallDuration).coerceIn(4, 180)
+
+            val recResult = audioController.recordAndEncryptCallerMessage(
+                messageId = messageId,
+                maxDurationSeconds = maxRecSec,
+                silenceTimeoutSeconds = settings.silenceTimeout.coerceIn(2, 20),
+                useHardwareMicIfAvailable = true,
+                hasRecordPermission = hasRecordPerm,
+                onTick = { elapsedSec, silenceSec, amp ->
+                    _receptionistSession.value = _receptionistSession.value.copy(
+                        elapsedSeconds = elapsedSec,
+                        silenceSeconds = silenceSec,
+                        currentAmplitude = amp
+                    )
+                },
+                shouldStopEarly = { stopRecordingEarlyFlag || call.state == Call.STATE_DISCONNECTED }
+            )
+
+            appendCellLog(recResult.statusDetail)
+
+            // 3. Optional Closing Message
+            if (settings.closingMessageText.isNotBlank() && call.state != Call.STATE_DISCONNECTED) {
+                _receptionistSession.value = _receptionistSession.value.copy(
+                    stage = ReceptionistStage.PLAYING_CLOSING_SCRIPT
+                )
+                appendCellLog("Playing closing script...")
+                ttsEngine.speakAndSynthesize(
+                    text = settings.closingMessageText,
+                    config = TtsSynthesisConfig(
+                        language = settings.language,
+                        gender = settings.voiceGender,
+                        mood = settings.voiceMood,
+                        speed = settings.speechRate,
+                        pitch = settings.speechPitch,
+                        volume = settings.speechVolume,
+                        modelId = settings.voiceModel
+                    ),
+                    playAudioOutLoud = true
+                )
+                delay(400L)
+            }
+
+            // 4. Disconnect Cellular Call
+            VoiceShieldInCallService.disconnectActiveCall()
+            appendCellLog("Cellular call automatically disconnected.")
+
+            // 5. Encrypt & Save to Room Database
+            _receptionistSession.value = _receptionistSession.value.copy(
+                stage = ReceptionistStage.ENCRYPTING_AND_SAVING
+            )
+
+            val recStatus = if (recResult.success && recResult.encryptedFilePath != null) {
+                RecordingStatus.RECORDED_ENCRYPTED
+            } else if (recResult.endedBySilenceTimeout) {
+                RecordingStatus.SILENCE_TIMEOUT_EMPTY
+            } else {
+                RecordingStatus.RECORDING_FAILED
+            }
+
+            val transcript = if (recResult.rawWavBytes != null) {
+                sttTranscriber.transcribeOffline(
+                    wavBytes = recResult.rawWavBytes,
+                    language = settings.language,
+                    callerNumber = eval.displayNumber,
+                    callerProvidedHint = null
+                )
+            } else null
+
+            val savedMessage = VoiceMessageEntity(
+                id = messageId,
+                callerNumber = eval.displayNumber,
+                contactName = eval.contactName ?: "Cellular Caller",
+                callDateMillis = System.currentTimeMillis(),
+                callDurationSeconds = recResult.durationSeconds + 5,
+                messageDurationSeconds = recResult.durationSeconds,
+                encryptedFilePath = recResult.encryptedFilePath,
+                recordingStatus = recStatus.name,
+                consentStatus = ConsentStatus.DISCLOSURE_PLAYED_IMPLICIT.name,
+                transcription = transcript,
+                spamClassification = eval.spamClassification.name,
+                spamScore = eval.spamScore,
+                callHandlingStatus = CallHandlingStatus.RECEPTIONIST_COMPLETED.name,
+                audioCapabilityStatus = "Default Dialer InCallService Cellular Auto-Answer",
+                isRead = false,
+                isImportant = false,
+                languageCode = settings.language.code,
+                voiceMoodUsed = settings.voiceMood.name
+            )
+
+            dao.insertMessage(savedMessage)
+            enforceMaximumStoredMessages(settings.maximumStoredMessages)
+
+            // 6. Notification
+            val notified = notificationManager.sendNewVoiceMessageNotification(
+                message = savedMessage,
+                notificationsEnabledInSettings = settings.notificationEnabled
+            )
+            if (notified) {
+                appendCellLog("Notification sent: \"New voice message received • ${eval.displayNumber} • Tap to Listen\"")
+            } else {
+                appendCellLog("Voice message saved to Inbox.")
+            }
+
+            _receptionistSession.value = _receptionistSession.value.copy(
+                isActive = false,
+                stage = ReceptionistStage.COMPLETED_SUCCESS,
+                recordedMessageId = messageId
+            )
+        }
     }
 }

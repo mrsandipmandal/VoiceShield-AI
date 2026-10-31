@@ -213,7 +213,7 @@ class SpamAndScreeningEngine(
             )
         }
 
-        if (allowRule != null) {
+        if (allowRule != null && !settings.applyToAllCalls) {
             return ScreeningEvaluationResult(
                 normalizedNumber = normalized,
                 displayNumber = displayNumber,
@@ -234,7 +234,7 @@ class SpamAndScreeningEngine(
             )
         }
 
-        if (isSavedContact && settings.knownContactsBypass) {
+        if (isSavedContact && settings.knownContactsBypass && !settings.applyToAllCalls) {
             return ScreeningEvaluationResult(
                 normalizedNumber = normalized,
                 displayNumber = displayNumber,

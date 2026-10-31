@@ -66,6 +66,7 @@ class ExampleUnitTest {
     @Test
     fun allowlistAndSavedContacts_bypassReceptionistWhileBlocklistRejectsImmediately() {
         val settings = VoiceShieldSettings(
+            applyToAllCalls = false,
             knownContactsBypass = true,
             unknownNumberAction = UnknownNumberAction.RECEPTIONIST
         )
@@ -220,5 +221,31 @@ class ExampleUnitTest {
         val ulaw = G711Codec.linearToUlawSample(originalSample)
         val decodedSample = G711Codec.ulawToLinearSample(ulaw)
         assertTrue(abs(originalSample.toInt() - decodedSample.toInt()) < 250)
+    }
+
+    @Test
+    fun universalProtection_routesAllCallsToReceptionistWhenEnabled() {
+        val settings = VoiceShieldSettings(
+            protectionEnabled = true,
+            applyToAllCalls = true,
+            answerDelaySeconds = 25
+        )
+        val savedContactResult = engine.evaluateCall(
+            rawNumber = "+919831122334",
+            settings = settings,
+            callerRules = emptyList(),
+            recentCallsFromNumber = emptyList(),
+            overrideContactName = "Friend"
+        )
+        assertTrue(savedContactResult.isSavedContact)
+        assertTrue(savedContactResult.shouldRouteToReceptionist)
+        assertEquals(CallHandlingStatus.RECEPTIONIST_COMPLETED, savedContactResult.handlingStatus)
+    }
+
+    @Test
+    fun dynamicSlider_supportsDelayUpTo30Seconds() {
+        val settings30s = VoiceShieldSettings(answerDelaySeconds = 30)
+        assertEquals(30, settings30s.answerDelaySeconds)
+        assertTrue(settings30s.answerDelaySeconds in 1..30)
     }
 }

@@ -42,9 +42,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -67,6 +71,7 @@ import com.example.domain.model.DeviceAudioCapabilities
 import com.example.domain.model.RecordingStatus
 import com.example.domain.model.SipRegistrationState
 import com.example.domain.model.SpamClassification
+import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceShieldSettings
 import com.example.feature.common.CapabilityStatusBadge
 import com.example.feature.common.MetricStatCard
@@ -92,6 +97,8 @@ fun DashboardScreen(
     sipStatusMessage: String,
     sipLocalPort: Int,
     onToggleProtection: (Boolean) -> Unit,
+    onUpdateSettings: ((VoiceShieldSettings) -> VoiceShieldSettings) -> Unit,
+    onPreviewLanguage: (VoiceLanguage) -> Unit,
     onNavigate: (VoiceShieldScreen) -> Unit,
     onQuickSimulateCall: () -> Unit,
     onPlayMessage: (VoiceMessageEntity) -> Unit
@@ -126,7 +133,7 @@ fun DashboardScreen(
             .testTag("dashboard_screen"),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. Hero Protection Shield Banner
+        // 1. Hero Protection Shield Banner (Simplified & Universal)
         Card(
             shape = MaterialTheme.shapes.large,
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -151,7 +158,8 @@ fun DashboardScreen(
                     )
                     .padding(18.dp)
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    // Header Row with Main Shield Switch
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -178,12 +186,13 @@ fun DashboardScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column {
                                 Text(
-                                    text = if (settings.protectionEnabled) "SHIELD ACTIVE • DUAL-MODE AI" else "PROTECTION PAUSED",
+                                    text = if (settings.protectionEnabled) "SHIELD ACTIVE • ALL CALLS" else "PROTECTION PAUSED",
                                     style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
                                     color = if (settings.protectionEnabled) EmeraldShield else CrimsonSpam
                                 )
                                 Text(
-                                    text = "VoiceShield AI Receptionist",
+                                    text = "AI Voice Receptionist",
                                     style = MaterialTheme.typography.headlineMedium,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
@@ -200,12 +209,96 @@ fun DashboardScreen(
                         )
                     }
 
+                    // Universal Protection Status Text
                     Text(
-                        text = "${settings.callingMode.displayName} • ${settings.language.displayName} • ${settings.voiceGender.displayName} (${settings.voiceMood.displayName})",
+                        text = if (settings.protectionEnabled) {
+                            "Universal Protection ON: Receptionist will automatically answer all incoming calls after ${settings.answerDelaySeconds}s delay."
+                        } else {
+                            "Receptionist is paused. Turn on shield to automatically answer and protect your calls."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
+                    // Dynamic Ring Delay Slider (Up to 30s)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Auto-Answer Ring Delay",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "${settings.answerDelaySeconds} seconds",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = EmeraldShield
+                            )
+                        }
+                        Slider(
+                            value = settings.answerDelaySeconds.toFloat(),
+                            onValueChange = { newVal ->
+                                onUpdateSettings { it.copy(answerDelaySeconds = newVal.toInt().coerceIn(1, 30)) }
+                            },
+                            valueRange = 1f..30f,
+                            steps = 28,
+                            colors = SliderDefaults.colors(
+                                thumbColor = EmeraldShield,
+                                activeTrackColor = EmeraldShield
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("answer_delay_slider")
+                        )
+                    }
+
+                    // Offline Language Selection Chips & Preview Voice
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Offline Assistant Language",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val languages = listOf(
+                                VoiceLanguage.BENGALI_IN to "বাংলা (Bengali)",
+                                VoiceLanguage.ENGLISH_IN to "English",
+                                VoiceLanguage.HINDI_IN to "हिन्दी (Hindi)"
+                            )
+                            languages.forEach { (lang, label) ->
+                                val isSelected = settings.language == lang
+
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        onUpdateSettings { it.copy(language = lang) }
+                                    },
+                                    label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = EmeraldShield.copy(alpha = 0.25f),
+                                        selectedLabelColor = EmeraldShield
+                                    ),
+                                    modifier = Modifier.testTag("lang_chip_${lang.code}")
+                                )
+                            }
+                        }
+                    }
+
+                    // Primary Action Buttons
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxWidth()
@@ -214,7 +307,7 @@ fun DashboardScreen(
                             onClick = onQuickSimulateCall,
                             colors = ButtonDefaults.buttonColors(containerColor = EmeraldShield),
                             modifier = Modifier
-                                .weight(1f)
+                                .weight(1.2f)
                                 .testTag("quick_simulate_call_button")
                         ) {
                             Icon(
@@ -223,21 +316,21 @@ fun DashboardScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Test SIP Receptionist")
+                            Text("Test Receptionist")
                         }
                         OutlinedButton(
-                            onClick = { onNavigate(VoiceShieldScreen.TTS_VOICE_STUDIO) },
+                            onClick = { onPreviewLanguage(settings.language) },
                             modifier = Modifier
                                 .weight(1f)
-                                .testTag("open_voice_studio_button")
+                                .testTag("preview_voice_greeting_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.GraphicEq,
+                                imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp)
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Voice Studio")
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Preview Voice")
                         }
                     }
                 }

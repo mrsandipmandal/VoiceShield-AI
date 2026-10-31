@@ -4,9 +4,18 @@ import android.telecom.Call
 import android.telecom.CallAudioState
 import android.telecom.InCallService
 import android.telecom.VideoProfile
+import com.example.VoiceShieldApplication
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 data class ActiveTelecomCallState(
     val hasActiveCall: Boolean = false,
@@ -38,6 +47,7 @@ class VoiceShieldInCallService : InCallService() {
         private var serviceInstanceRef: VoiceShieldInCallService? = null
 
         fun answerActiveCall(): Boolean {
+            serviceInstanceRef?.cancelAutoAnswer()
             val call = currentCallRef ?: return false
             return try {
                 call.answer(VideoProfile.STATE_AUDIO_ONLY)
@@ -48,6 +58,7 @@ class VoiceShieldInCallService : InCallService() {
         }
 
         fun disconnectActiveCall(): Boolean {
+            serviceInstanceRef?.cancelAutoAnswer()
             val call = currentCallRef ?: return false
             // Safeguard: never programmatically disconnect an emergency call from automation
             val isEmergency = call.details?.hasProperty(Call.Details.PROPERTY_EMERGENCY_CALLBACK_MODE) == true
@@ -94,6 +105,9 @@ class VoiceShieldInCallService : InCallService() {
         }
     }
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var autoAnswerJob: Job? = null
+
     private val callCallback = object : Call.Callback() {
         override fun onStateChanged(call: Call, state: Int) {
             updateCallSnapshot(call)
@@ -110,6 +124,8 @@ class VoiceShieldInCallService : InCallService() {
     }
 
     override fun onDestroy() {
+        cancelAutoAnswer()
+        serviceScope.cancel()
         if (serviceInstanceRef === this) {
             serviceInstanceRef = null
         }
@@ -124,6 +140,7 @@ class VoiceShieldInCallService : InCallService() {
     }
 
     override fun onCallRemoved(call: Call) {
+        cancelAutoAnswer()
         call.unregisterCallback(callCallback)
         if (currentCallRef === call) {
             currentCallRef = null
@@ -142,15 +159,55 @@ class VoiceShieldInCallService : InCallService() {
         }
     }
 
+    private fun cancelAutoAnswer() {
+        autoAnswerJob?.cancel()
+        autoAnswerJob = null
+    }
+
+    private fun scheduleAutoAnswerIfEnabled(call: Call) {
+        if (autoAnswerJob?.isActive == true) return
+        val app = applicationContext as? VoiceShieldApplication ?: return
+        autoAnswerJob = serviceScope.launch {
+            val settings = app.repository.settingsFlow.first()
+            if (!settings.protectionEnabled || !settings.autoAnswerEnabled) {
+                return@launch
+            }
+            val delaySec = settings.answerDelaySeconds.coerceIn(1, 30)
+            for (sec in delaySec downTo 1) {
+                if (call.state != Call.STATE_RINGING) break
+                _activeCallState.value = _activeCallState.value.copy(
+                    callStateLabel = "Incoming Call • Auto-answering in ${sec}s..."
+                )
+                delay(1000L)
+            }
+            if (call.state == Call.STATE_RINGING) {
+                _activeCallState.value = _activeCallState.value.copy(
+                    callStateLabel = "Auto-answering with VoiceShield AI..."
+                )
+                val answered = answerActiveCall()
+                if (answered) {
+                    app.repository.handleCellularInCallReceptionist(call)
+                }
+            }
+        }
+    }
+
     private fun updateCallSnapshot(call: Call) {
         val number = call.details?.handle?.schemeSpecificPart.orEmpty().ifBlank { "Unknown Caller" }
         val isEmergency = call.details?.hasProperty(Call.Details.PROPERTY_EMERGENCY_CALLBACK_MODE) == true
         val state = call.state
+
+        if (state == Call.STATE_RINGING && !isEmergency) {
+            scheduleAutoAnswerIfEnabled(call)
+        } else {
+            cancelAutoAnswer()
+        }
+
         _activeCallState.value = ActiveTelecomCallState(
             hasActiveCall = state != Call.STATE_DISCONNECTED,
             callerNumber = number,
             callState = state,
-            callStateLabel = stateToLabel(state),
+            callStateLabel = if (autoAnswerJob?.isActive == true) _activeCallState.value.callStateLabel else stateToLabel(state),
             isEmergencyCall = isEmergency,
             isMuted = _activeCallState.value.isMuted,
             isSpeakerphoneOn = _activeCallState.value.isSpeakerphoneOn,

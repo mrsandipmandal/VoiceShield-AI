@@ -15,6 +15,7 @@ import com.example.domain.model.CallerRuleType
 import com.example.domain.model.DeviceAudioCapabilities
 import com.example.domain.model.ReceptionistSessionState
 import com.example.domain.model.SipRegistrationState
+import com.example.domain.model.StorageInspectionInfo
 import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceMood
 import com.example.domain.model.VoiceShieldSettings
@@ -46,7 +47,7 @@ enum class VoiceShieldScreen(
     MODEL_MANAGER("model_manager", "Model Manager", "Sherpa-ONNX Local Models & Checksum Verifier"),
     SETTINGS("settings", "Settings", "All Configurable Receptionist, SIP & Telecom Variables"),
     PERMISSIONS_COMPATIBILITY("permissions_compat", "Permissions & Compatibility", "5-Point Audio Capability Matrix & SIP Architecture"),
-    PRIVACY_DATA("privacy_data", "Privacy & Data Management", "Keystore Encryption, Retention & Zero-Cloud Controls")
+    PRIVACY_DATA("privacy_data", "Data & Storage (ডেটা স্টোরেজ)", "ফাইল লোকেশন, Keystore এনক্রিপশন ও সব ডেটা মোছা")
 }
 
 class VoiceShieldViewModel(
@@ -98,13 +99,25 @@ class VoiceShieldViewModel(
     private val _pendingDeleteConfirmationMessageId = MutableStateFlow<String?>(null)
     val pendingDeleteConfirmationMessageId: StateFlow<String?> = _pendingDeleteConfirmationMessageId.asStateFlow()
 
+    private val _storageInspectionState = MutableStateFlow(repository.inspectStorage())
+    val storageInspectionState: StateFlow<StorageInspectionInfo> = _storageInspectionState.asStateFlow()
+
     fun navigateTo(screen: VoiceShieldScreen) {
         _currentScreen.value = screen
         refreshDeviceCapabilities()
+        refreshStorageInspection()
     }
 
     fun refreshDeviceCapabilities() {
         _capabilitiesState.value = repository.getDeviceCapabilities()
+    }
+
+    fun refreshStorageInspection() {
+        _storageInspectionState.value = repository.inspectStorage(
+            messagesCount = messagesState.value.size,
+            callsCount = screenedCallsState.value.size,
+            rulesCount = callerRulesState.value.size
+        )
     }
 
     fun registerOrRefreshSipAccount() {
@@ -277,7 +290,27 @@ class VoiceShieldViewModel(
         viewModelScope.launch {
             repository.audioController.stopPlayback()
             repository.deleteAllMessagesAndFiles()
+            refreshStorageInspection()
             _statusBannerMessage.value = "All voice messages and encrypted files securely deleted."
+        }
+    }
+
+    /**
+     * Complete zero-trust user data erasure:
+     * Deletes all audio recordings, resets database tables, and resets settings to defaults.
+     */
+    fun wipeAllUserData(onFinished: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            repository.audioController.stopPlayback()
+            val result = repository.wipeAllUserData()
+            refreshStorageInspection()
+            if (result.isSuccess) {
+                _statusBannerMessage.value = "সমস্ত ডেটা সফলভাবে মুছে ফেলা হয়েছে (All user data wiped successfully)"
+                onFinished(true)
+            } else {
+                _statusBannerMessage.value = "ডেটা মুছতে ত্রুটি: ${result.exceptionOrNull()?.message}"
+                onFinished(false)
+            }
         }
     }
 
@@ -291,6 +324,7 @@ class VoiceShieldViewModel(
     ) {
         viewModelScope.launch {
             repository.addCallerRule(phoneNumber, displayName, ruleType, notes, spamWeight)
+            refreshStorageInspection()
             _statusBannerMessage.value = "Saved ${phoneNumber.trim()} to ${ruleType.name}"
         }
     }
@@ -298,12 +332,14 @@ class VoiceShieldViewModel(
     fun deleteCallerRule(ruleId: Long) {
         viewModelScope.launch {
             repository.removeCallerRule(ruleId)
+            refreshStorageInspection()
         }
     }
 
     fun clearScreeningHistory() {
         viewModelScope.launch {
             repository.clearScreenedCallHistory()
+            refreshStorageInspection()
             _statusBannerMessage.value = "Cleared screened call history."
         }
     }
@@ -360,6 +396,13 @@ class VoiceShieldViewModel(
         viewModelScope.launch {
             val removed = repository.cleanupExpiredRecordings(settingsState.value.messageAutoDeleteDays)
             _statusBannerMessage.value = "Retention check complete ($removed expired recordings removed)."
+        }
+    }
+
+    fun previewLanguage(lang: VoiceLanguage) {
+        viewModelScope.launch {
+            _statusBannerMessage.value = "Playing ${lang.displayName} offline greeting preview..."
+            repository.previewLanguageGreeting(lang)
         }
     }
 

@@ -201,6 +201,11 @@ enum class VoiceLanguage(
     HINDI_IN("hi-IN", "Hindi (India)", "हिन्दी (भारत)", "India");
 
     companion object {
+        val BENGALI: VoiceLanguage get() = BENGALI_IN
+        val ENGLISH: VoiceLanguage get() = ENGLISH_IN
+        val ENGLISH_US: VoiceLanguage get() = ENGLISH_IN
+        val HINDI: VoiceLanguage get() = HINDI_IN
+
         fun fromCode(code: String): VoiceLanguage =
             entries.firstOrNull { it.code.equals(code, ignoreCase = true) } ?: BENGALI_IN
     }
@@ -309,9 +314,10 @@ data class DeviceAudioCapabilities(
  */
 data class VoiceShieldSettings(
     val protectionEnabled: Boolean = true,
+    val applyToAllCalls: Boolean = true,
     val callingMode: CallingArchitectureMode = CallingArchitectureMode.DUAL_ACTIVE,
     val autoAnswerEnabled: Boolean = true,
-    val answerDelaySeconds: Int = 2,
+    val answerDelaySeconds: Int = 5,
     val greetingEnabled: Boolean = true,
     val greetingText: String = "নমস্কার! আমি একটি Automated Personal Assistant। আপনি যাঁর সঙ্গে যোগাযোগ করতে চাইছেন, তিনি এখন ফোন ধরতে পারছেন না। অনুগ্রহ করে আপনার নাম এবং বার্তাটি বলুন।",
     val knownCallerGreetingText: String = "নমস্কার! আমি এখন একটু ব্যস্ত আছি। অনুগ্রহ করে আপনার বার্তাটি বলুন, আমি শীঘ্রই কল ব্যাক করব।",
@@ -396,3 +402,42 @@ data class ReceptionistSessionState(
     val recordedMessageId: String? = null,
     val capabilityWarning: String? = null
 )
+
+/**
+ * Detailed breakdown of physical data locations, encryption key, file counts, and storage sizes on Android.
+ */
+data class StorageInspectionInfo(
+    val databasePath: String = "",
+    val databaseSizeBytes: Long = 0L,
+    val voiceMessagesDirPath: String = "",
+    val voiceMessagesFileCount: Int = 0,
+    val voiceMessagesSizeBytes: Long = 0L,
+    val settingsDataStorePath: String = "",
+    val settingsDataStoreSizeBytes: Long = 0L,
+    val voiceModelsDirPath: String = "",
+    val voiceModelsFileCount: Int = 0,
+    val voiceModelsSizeBytes: Long = 0L,
+    val keystoreKeyAlias: String = "VoiceShieldRecordingMasterKey_v1",
+    val encryptionAlgorithm: String = "AES-256-GCM (Hardware AndroidKeyStore)",
+    val totalRecordedMessagesCount: Int = 0,
+    val totalScreenedCallsCount: Int = 0,
+    val totalCallerRulesCount: Int = 0
+) {
+    val formattedDbSize: String get() = formatBytes(databaseSizeBytes)
+    val formattedVoiceMessagesSize: String get() = formatBytes(voiceMessagesSizeBytes)
+    val formattedDataStoreSize: String get() = formatBytes(settingsDataStoreSizeBytes)
+    val formattedVoiceModelsSize: String get() = formatBytes(voiceModelsSizeBytes)
+    val totalStorageSizeBytes: Long get() = databaseSizeBytes + voiceMessagesSizeBytes + settingsDataStoreSizeBytes + voiceModelsSizeBytes
+    val formattedTotalStorageSize: String get() = formatBytes(totalStorageSizeBytes)
+
+    companion object {
+        fun formatBytes(bytes: Long): String {
+            return when {
+                bytes <= 0L -> "0 B"
+                bytes < 1024L -> "$bytes B"
+                bytes < 1024L * 1024L -> String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0)
+                else -> String.format(java.util.Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
+            }
+        }
+    }
+}

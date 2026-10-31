@@ -31,6 +31,7 @@ class SettingsDataStore(
 
     object Keys {
         val PROTECTION_ENABLED = booleanPreferencesKey("protectionEnabled")
+        val APPLY_TO_ALL_CALLS = booleanPreferencesKey("applyToAllCalls")
         val CALLING_MODE = stringPreferencesKey("callingMode")
         val AUTO_ANSWER_ENABLED = booleanPreferencesKey("autoAnswerEnabled")
         val ANSWER_DELAY_SECONDS = intPreferencesKey("answerDelaySeconds")
@@ -80,6 +81,7 @@ class SettingsDataStore(
         val defaults = VoiceShieldSettings()
         return VoiceShieldSettings(
             protectionEnabled = prefs[Keys.PROTECTION_ENABLED] ?: defaults.protectionEnabled,
+            applyToAllCalls = prefs[Keys.APPLY_TO_ALL_CALLS] ?: defaults.applyToAllCalls,
             callingMode = prefs[Keys.CALLING_MODE]?.let {
                 runCatching { CallingArchitectureMode.valueOf(it) }.getOrNull()
             } ?: defaults.callingMode,
@@ -139,9 +141,10 @@ class SettingsDataStore(
             val current = decodePreferences(prefs)
             val updated = transform(current)
             prefs[Keys.PROTECTION_ENABLED] = updated.protectionEnabled
+            prefs[Keys.APPLY_TO_ALL_CALLS] = updated.applyToAllCalls
             prefs[Keys.CALLING_MODE] = updated.callingMode.name
             prefs[Keys.AUTO_ANSWER_ENABLED] = updated.autoAnswerEnabled
-            prefs[Keys.ANSWER_DELAY_SECONDS] = updated.answerDelaySeconds.coerceIn(0, 30)
+            prefs[Keys.ANSWER_DELAY_SECONDS] = updated.answerDelaySeconds.coerceIn(1, 30)
             prefs[Keys.GREETING_ENABLED] = updated.greetingEnabled
             prefs[Keys.GREETING_TEXT] = updated.greetingText
             prefs[Keys.KNOWN_CALLER_GREETING_TEXT] = updated.knownCallerGreetingText

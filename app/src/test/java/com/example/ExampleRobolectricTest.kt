@@ -86,6 +86,7 @@ class ExampleRobolectricTest {
 
             val loaded = settingsStore.settingsFlow.first()
             assertFalse(loaded.autoAnswerEnabled)
+            assertTrue(loaded.applyToAllCalls)
             assertEquals(7, loaded.answerDelaySeconds)
             assertEquals("Custom Bengali Greeting", loaded.greetingText)
             assertEquals(VoiceLanguage.HINDI_IN, loaded.language)
@@ -108,6 +109,44 @@ class ExampleRobolectricTest {
             assertEquals(250, loaded.maximumStoredMessages)
 
             tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun multilingualOfflineTts_generatesBengaliEnglishAndHindiWavs() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val ttsEngine = LocalTtsEngine(context)
+
+            val bengaliWav = ttsEngine.generateExpressiveOfflineWav(
+                text = "নমস্কার! আমি একটি Automated Personal Assistant। অনুগ্রহ করে আপনার বার্তাটি বলুন।",
+                speed = 1.0f,
+                pitch = 1.0f,
+                volume = 0.95f,
+                pauseMs = 250,
+                emphasis = 0.65f
+            )
+            assertTrue(bengaliWav.size > 1000)
+
+            val englishWav = ttsEngine.generateExpressiveOfflineWav(
+                text = "Hello! I am an Automated Personal Assistant. Please leave your message.",
+                speed = 1.0f,
+                pitch = 1.0f,
+                volume = 0.95f,
+                pauseMs = 250,
+                emphasis = 0.65f
+            )
+            assertTrue(englishWav.size > 1000)
+
+            val hindiWav = ttsEngine.generateExpressiveOfflineWav(
+                text = "नमस्ते! मैं एक ऑटोमेटेड पर्सनल असिस्टेंट हूँ। कृपया अपना संदेश रिकॉर्ड करें।",
+                speed = 1.0f,
+                pitch = 1.0f,
+                volume = 0.95f,
+                pauseMs = 250,
+                emphasis = 0.65f
+            )
+            assertTrue(hindiWav.size > 1000)
         }
     }
 
@@ -258,6 +297,73 @@ class ExampleRobolectricTest {
             assertEquals("+919831099887", invite.callerNumberOrId)
             assertEquals("Courier", invite.callerDisplayName)
             assertEquals(40100, invite.remoteRtpPort)
+        }
+    }
+
+    @Test
+    fun storageInspectionAndWipeAllData_inspectsPhysicalPathsAndWipesCleanly() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val app = context as VoiceShieldApplication
+        val repo = app.repository
+
+        runBlocking {
+            // 1. Storage inspection reports accurate paths
+            val inspectionBefore = repo.inspectStorage()
+            assertTrue(inspectionBefore.databasePath.endsWith("voiceshield_database.db"))
+            assertTrue(inspectionBefore.voiceMessagesDirPath.endsWith("encrypted_voice_messages"))
+            assertTrue(inspectionBefore.settingsDataStorePath.contains("voiceshield_settings"))
+            assertTrue(inspectionBefore.voiceModelsDirPath.endsWith("sherpa_onnx_models"))
+            assertEquals("VoiceShieldRecordingMasterKey_v1", inspectionBefore.keystoreKeyAlias)
+
+            // 2. Insert test data
+            repo.addCallerRule(
+                phoneNumber = "+919800011122",
+                displayName = "Test Delivery",
+                ruleType = com.example.domain.model.CallerRuleType.ALLOWLIST,
+                notes = "Courier"
+            )
+            val testMsg = VoiceMessageEntity(
+                id = "test_msg_storage_wipe",
+                callerNumber = "+919800011122",
+                contactName = "Test Delivery",
+                callDateMillis = System.currentTimeMillis(),
+                callDurationSeconds = 15,
+                messageDurationSeconds = 12,
+                encryptedFilePath = File(repo.audioController.getEncryptedRecordingsDir(), "test_msg_storage_wipe.wav.enc").apply {
+                    writeBytes(ByteArray(256))
+                }.absolutePath,
+                recordingStatus = RecordingStatus.RECORDED_ENCRYPTED.name,
+                consentStatus = "CONSENT_PLAYED_ACCEPTED",
+                transcription = "Testing wipe",
+                spamClassification = "LOW_RISK",
+                spamScore = 10,
+                callHandlingStatus = "RECEPTIONIST_COMPLETED",
+                audioCapabilityStatus = "SUPPORTED",
+                isRead = false,
+                isImportant = false
+            )
+            val dao = VoiceShieldDatabase.getInstance(context).voiceShieldDao()
+            dao.insertMessage(testMsg)
+
+            val rules = repo.callerRulesFlow.first()
+            assertTrue(rules.isNotEmpty())
+            val messages = repo.messagesFlow.first()
+            assertTrue(messages.isNotEmpty())
+
+            // 3. Wipe all data
+            val wipeResult = repo.wipeAllUserData()
+            assertTrue(wipeResult.isSuccess)
+
+            // 4. Verify everything is wiped clean
+            val rulesAfter = repo.callerRulesFlow.first()
+            assertTrue(rulesAfter.isEmpty())
+            val messagesAfter = repo.messagesFlow.first()
+            assertTrue(messagesAfter.isEmpty())
+            val callsAfter = repo.screenedCallsFlow.first()
+            assertTrue(callsAfter.isEmpty())
+
+            val audioFilesRemaining = repo.audioController.getEncryptedRecordingsDir().listFiles()
+            assertTrue(audioFilesRemaining.isNullOrEmpty())
         }
     }
 }

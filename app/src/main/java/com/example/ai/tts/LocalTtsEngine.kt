@@ -289,8 +289,8 @@ class LocalTtsEngine(
         speed: Float,
         pitch: Float,
         volume: Float,
-        pauseMs: Int,
-        emphasis: Float,
+        pauseMs: Int = 250,
+        emphasis: Float = 0.65f,
         baseFrequencyHz: Double = 195.0
     ): ByteArray {
         val sampleRate = 16000

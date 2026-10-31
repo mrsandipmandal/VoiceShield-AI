@@ -73,6 +73,9 @@ interface VoiceShieldDao {
     @Query("DELETE FROM caller_rules WHERE id = :ruleId")
     suspend fun deleteCallerRuleById(ruleId: Long)
 
+    @Query("DELETE FROM caller_rules")
+    suspend fun clearAllCallerRules()
+
     // --- Greeting Scripts ---
     @Query("SELECT * FROM greeting_scripts ORDER BY updatedAtMillis DESC")
     fun observeGreetingScripts(): Flow<List<GreetingScriptEntity>>

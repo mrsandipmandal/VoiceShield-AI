@@ -150,6 +150,7 @@ fun VoiceShieldMainApp(viewModel: VoiceShieldViewModel) {
     val statusBanner by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
     val highlightedMsgId by viewModel.highlightedMessageId.collectAsStateWithLifecycle()
     val pendingDeleteMsgId by viewModel.pendingDeleteConfirmationMessageId.collectAsStateWithLifecycle()
+    val storageInfo by viewModel.storageInspectionState.collectAsStateWithLifecycle()
 
     var showAllScreensSheet by remember { mutableStateOf(false) }
 
@@ -405,6 +406,12 @@ fun VoiceShieldMainApp(viewModel: VoiceShieldViewModel) {
                         onToggleProtection = { enabled ->
                             viewModel.updateSettings { it.copy(protectionEnabled = enabled) }
                         },
+                        onUpdateSettings = { transform ->
+                            viewModel.updateSettings(transform)
+                        },
+                        onPreviewLanguage = { lang ->
+                            viewModel.previewLanguage(lang)
+                        },
                         onNavigate = { viewModel.navigateTo(it) },
                         onQuickSimulateCall = {
                             viewModel.navigateTo(VoiceShieldScreen.VOICE_RECEPTIONIST)
@@ -534,11 +541,11 @@ fun VoiceShieldMainApp(viewModel: VoiceShieldViewModel) {
 
                     VoiceShieldScreen.PRIVACY_DATA -> PrivacyAndDataScreen(
                         settings = settings,
-                        totalMessagesCount = messages.size,
-                        totalScreenedCallsCount = screenedCalls.size,
+                        storageInfo = storageInfo,
                         onRunRetentionCleanup = { viewModel.runExpiredRetentionCleanup() },
                         onDeleteAllRecordings = { viewModel.deleteAllMessages() },
-                        onClearCallHistory = { viewModel.clearScreeningHistory() }
+                        onClearCallHistory = { viewModel.clearScreeningHistory() },
+                        onWipeAllUserData = { viewModel.wipeAllUserData() }
                     )
                 }
             }

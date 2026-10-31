@@ -201,6 +201,12 @@ class VoiceShieldNotificationManager(
             false
         }
     }
+
+    fun cancelAllNotifications() {
+        try {
+            NotificationManagerCompat.from(context).cancelAll()
+        } catch (_: Exception) {}
+    }
 }
 
 class NotificationActionReceiver : BroadcastReceiver() {
