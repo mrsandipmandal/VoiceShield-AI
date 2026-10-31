@@ -90,7 +90,7 @@ chmod +x scripts/generate-release-key.sh scripts/build-release-apk.sh
 - **Generated Keystore**: `my-upload-key.jks`
 - **Signed Release APK**: `app/build/outputs/apk/release/app-release.apk`
 
-### B. GitHub Actions CI/CD Pipeline (`.github/workflows/android-ci-cd.yml`)
+### B. GitHub Actions CI/CD Pipeline (`.github/workflows/build.yml`)
 Every push/PR to `main`/`master`, manual `workflow_dispatch`, or version tag (`v*.*.*`) executes:
 1. **`test-and-lint` Job**: Runs the full local JVM & Robolectric test suite (`gradle :app:testDebugUnitTest`) and uploads the HTML test report artifact.
 2. **`build-release` Job**:

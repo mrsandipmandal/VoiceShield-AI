@@ -19,12 +19,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PhoneCallback
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.PhoneCallback
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Save
@@ -217,7 +217,7 @@ fun VoiceReceptionistScreen(
                                 .weight(1f)
                                 .testTag("start_simulated_call_btn")
                         ) {
-                            Icon(Icons.Default.PhoneCallback, contentDescription = null)
+                            Icon(Icons.AutoMirrored.Filled.PhoneCallback, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                             Text("Simulate Incoming Call")
                         }
