@@ -29,13 +29,12 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Voicemail
@@ -63,8 +62,10 @@ import com.example.core.database.ScreenedCallEntity
 import com.example.core.database.VoiceMessageEntity
 import com.example.core.database.VoiceModelEntity
 import com.example.domain.model.CallHandlingStatus
+import com.example.domain.model.CapabilitySupportStatus
 import com.example.domain.model.DeviceAudioCapabilities
 import com.example.domain.model.RecordingStatus
+import com.example.domain.model.SipRegistrationState
 import com.example.domain.model.SpamClassification
 import com.example.domain.model.VoiceShieldSettings
 import com.example.feature.common.CapabilityStatusBadge
@@ -87,6 +88,9 @@ fun DashboardScreen(
     messages: List<VoiceMessageEntity>,
     voiceModels: List<VoiceModelEntity>,
     capabilities: DeviceAudioCapabilities,
+    sipRegistrationState: SipRegistrationState,
+    sipStatusMessage: String,
+    sipLocalPort: Int,
     onToggleProtection: (Boolean) -> Unit,
     onNavigate: (VoiceShieldScreen) -> Unit,
     onQuickSimulateCall: () -> Unit,
@@ -98,8 +102,9 @@ fun DashboardScreen(
             it.spamClassification == SpamClassification.HIGH_RISK_SPAM.name ||
             it.spamClassification == SpamClassification.BLOCKLISTED.name
     }
-    val unknownHandled = screenedCalls.count {
-        it.handlingStatus == CallHandlingStatus.RECEPTIONIST_COMPLETED.name ||
+    val automaticCallsHandled = screenedCalls.count {
+        it.handlingStatus == CallHandlingStatus.SIP_RECEPTIONIST_COMPLETED.name ||
+            it.handlingStatus == CallHandlingStatus.RECEPTIONIST_COMPLETED.name ||
             it.handlingStatus == CallHandlingStatus.RECEPTIONIST_FALLBACK.name ||
             it.handlingStatus == CallHandlingStatus.SCREENED_SILENCED.name
     }
@@ -107,8 +112,11 @@ fun DashboardScreen(
         it.recordingStatus == RecordingStatus.RECORDED_ENCRYPTED.name
     }
     val latestMessage = messages.firstOrNull()
+    val latestCaller = screenedCalls.firstOrNull()
     val activeModel = voiceModels.firstOrNull { it.id == settings.voiceModel }
         ?: voiceModels.firstOrNull()
+
+    val sipCapabilityBadge = sipRegistrationState.statusBadge
 
     Column(
         modifier = Modifier
@@ -170,7 +178,7 @@ fun DashboardScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column {
                                 Text(
-                                    text = if (settings.protectionEnabled) "SHIELD ACTIVE • OFFLINE AI" else "PROTECTION PAUSED",
+                                    text = if (settings.protectionEnabled) "SHIELD ACTIVE • DUAL-MODE AI" else "PROTECTION PAUSED",
                                     style = MaterialTheme.typography.labelLarge,
                                     color = if (settings.protectionEnabled) EmeraldShield else CrimsonSpam
                                 )
@@ -193,7 +201,7 @@ fun DashboardScreen(
                     }
 
                     Text(
-                        text = "100% On-Device Call Screening • ${settings.language.displayName} • Mood: ${settings.voiceMood.displayName} • Policy: ${settings.unknownNumberAction.displayName}",
+                        text = "${settings.callingMode.displayName} • ${settings.language.displayName} • ${settings.voiceGender.displayName} (${settings.voiceMood.displayName})",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -215,7 +223,7 @@ fun DashboardScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Test AI Receptionist")
+                            Text("Test SIP Receptionist")
                         }
                         OutlinedButton(
                             onClick = { onNavigate(VoiceShieldScreen.TTS_VOICE_STUDIO) },
@@ -236,10 +244,10 @@ fun DashboardScreen(
             }
         }
 
-        // 2. 4 Core Telemetry Counters
+        // 2. 4 Core Telemetry Counters (Total calls screened, Automatic calls handled, Saved messages, Spam calls rejected)
         SectionHeader(
-            title = "Live Call Telemetry",
-            subtitle = "Real-time on-device screening and message metrics"
+            title = "Live Call & Receptionist Telemetry",
+            subtitle = "On-device call screening, automatic SIP/RTP answering & encrypted messages"
         )
         Row(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -248,35 +256,26 @@ fun DashboardScreen(
             MetricStatCard(
                 title = "Total Screened",
                 value = totalScreened.toString(),
-                subtitle = "Incoming calls analyzed",
+                subtitle = "Cellular & SIP calls",
                 icon = Icons.Default.Call,
                 accentColor = CyanTelemetry,
                 modifier = Modifier.weight(1f),
                 onClick = { onNavigate(VoiceShieldScreen.SPAM_CALL_HISTORY) }
             )
             MetricStatCard(
-                title = "Spam Blocked",
-                value = spamBlocked.toString(),
-                subtitle = "Threshold >= ${settings.spamThreshold}",
-                icon = Icons.Default.Block,
-                accentColor = CrimsonSpam,
+                title = "Automatic Handled",
+                value = automaticCallsHandled.toString(),
+                subtitle = "AI Receptionist & silenced",
+                icon = Icons.Default.RecordVoiceOver,
+                accentColor = AmberWarning,
                 modifier = Modifier.weight(1f),
-                onClick = { onNavigate(VoiceShieldScreen.SPAM_CALL_HISTORY) }
+                onClick = { onNavigate(VoiceShieldScreen.VOICE_RECEPTIONIST) }
             )
         }
         Row(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            MetricStatCard(
-                title = "Unknown Handled",
-                value = unknownHandled.toString(),
-                subtitle = "Receptionist & silenced",
-                icon = Icons.Default.RecordVoiceOver,
-                accentColor = AmberWarning,
-                modifier = Modifier.weight(1f),
-                onClick = { onNavigate(VoiceShieldScreen.VOICE_RECEPTIONIST) }
-            )
             MetricStatCard(
                 title = "Saved Messages",
                 value = savedVoiceMessagesCount.toString(),
@@ -286,12 +285,25 @@ fun DashboardScreen(
                 modifier = Modifier.weight(1f),
                 onClick = { onNavigate(VoiceShieldScreen.VOICE_MESSAGE_INBOX) }
             )
+            MetricStatCard(
+                title = "Spam Rejected",
+                value = spamBlocked.toString(),
+                subtitle = "Threshold >= ${settings.spamThreshold}",
+                icon = Icons.Default.Block,
+                accentColor = CrimsonSpam,
+                modifier = Modifier.weight(1f),
+                onClick = { onNavigate(VoiceShieldScreen.SPAM_CALL_HISTORY) }
+            )
         }
 
-        // 3. Last Received Voice Message Card
+        // 3. Last Caller & Received Voice Message Card
         SectionHeader(
-            title = "Last Received Voice Message",
-            subtitle = "Encrypted on-device voicemail inbox preview"
+            title = "Last Caller & Voice Message",
+            subtitle = if (latestCaller != null) {
+                "Last Caller: ${latestCaller.callerNumber} (${latestCaller.handlingStatus})"
+            } else {
+                "Encrypted on-device voicemail inbox preview"
+            }
         )
         if (latestMessage != null) {
             val dateStr = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
@@ -364,17 +376,17 @@ fun DashboardScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "No voice messages yet. Tap 'Test AI Receptionist' above to simulate an incoming call and record a voice message.",
+                    text = "No voice messages yet. Tap 'Test SIP Receptionist' above to run an end-to-end SIP/RTP call with offline TTS greeting and remote caller recording.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(16.dp)
                 )
             }
         }
 
-        // 4. Local TTS Model Status & Device Call-Audio Compatibility Matrix
+        // 4. Mode 2 SIP Registration Status & Mode 1 Cellular Compatibility Card
         SectionHeader(
-            title = "Local TTS & Device Compatibility",
-            subtitle = "Transparent hardware & Android Telecom capability check"
+            title = "SIP Registration, TTS Model & Cellular Compatibility",
+            subtitle = "Mode 2 SIP/RTP VoIP stack status & Mode 1 SIM Cellular hardware report"
         )
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -382,12 +394,48 @@ fun DashboardScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), MaterialTheme.shapes.medium)
-                .clickable { onNavigate(VoiceShieldScreen.PERMISSIONS_COMPATIBILITY) }
+                .clickable { onNavigate(VoiceShieldScreen.CALL_PROTECTION) }
+                .testTag("sip_and_compatibility_card")
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // SIP Registration Status Row
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Router,
+                            contentDescription = "SIP Status",
+                            tint = EmeraldShield,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Mode 2 SIP Status: ${sipRegistrationState.label}",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "$sipStatusMessage (UDP Port $sipLocalPort • G.711 PCMU)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    CapabilityStatusBadge(status = sipCapabilityBadge)
+                }
+
+                // Active TTS Engine & Model Row
                 Row(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
@@ -395,16 +443,12 @@ fun DashboardScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Active TTS Engine & Model",
-                            style = MaterialTheme.typography.labelLarge,
+                            text = "TTS Model: ${activeModel?.displayName ?: "Android System Offline TTS"}",
+                            style = MaterialTheme.typography.titleSmall,
                             color = CyanTelemetry
                         )
                         Text(
-                            text = activeModel?.displayName ?: "Android System Offline TTS",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Text(
-                            text = "Language: ${settings.language.displayName} • Mood: ${settings.voiceMood.displayName}",
+                            text = "Language: ${settings.language.displayName} • Gender: ${settings.voiceGender.displayName} • Mood: ${settings.voiceMood.displayName}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -412,14 +456,14 @@ fun DashboardScreen(
                     CapabilityStatusBadge(status = capabilities.localTtsGenerationSupported)
                 }
 
-                CapabilityRowItem("1. Call Screening Service", capabilities.callScreeningSupported)
-                CapabilityRowItem("2. Call Answer & Disconnect", capabilities.callAnswerDisconnectSupported)
-                CapabilityRowItem("3. Local Offline TTS Synthesis", capabilities.localTtsGenerationSupported)
-                CapabilityRowItem("4. Cellular Uplink TTS Injection", capabilities.cellularTtsUplinkSupported)
-                CapabilityRowItem("5. Remote Cellular Call Recording", capabilities.cellularRemoteRecordingSupported)
+                CapabilityRowItem("1. Mode 1 CallScreeningService", capabilities.callScreeningSupported)
+                CapabilityRowItem("2. Default Dialer Answer/Disconnect", capabilities.callAnswerDisconnectSupported)
+                CapabilityRowItem("3. Local Sherpa-ONNX / Offline TTS", capabilities.localTtsGenerationSupported)
+                CapabilityRowItem("4. Mode 2 SIP/RTP Outgoing TTS & Caller Recording", sipCapabilityBadge)
+                CapabilityRowItem("5. Mode 1 Cellular Call Audio Injection/Recording", capabilities.cellularTtsUplinkSupported)
 
                 Text(
-                    text = "Tap to inspect detailed Android 10+ audio restrictions & SIP/VoIP PBX bridge architecture →",
+                    text = "Tap to configure SIP/VoIP credentials or Android Telecom Roles →",
                     style = MaterialTheme.typography.labelMedium,
                     color = EmeraldShield
                 )
@@ -429,7 +473,7 @@ fun DashboardScreen(
         // 5. All 12 Application Modules Directory
         SectionHeader(
             title = "All 12 VoiceShield Modules",
-            subtitle = "Direct access to every protection, voice, and privacy workspace"
+            subtitle = "Direct access to every protection, SIP, voice, and privacy workspace"
         )
         val moduleItems = listOf(
             Triple(VoiceShieldScreen.CALL_PROTECTION, Icons.Default.Security, EmeraldShield),
@@ -469,7 +513,7 @@ fun DashboardScreen(
 @Composable
 private fun CapabilityRowItem(
     label: String,
-    status: com.example.domain.model.CapabilitySupportStatus
+    status: CapabilitySupportStatus
 ) {
     Row(
         horizontalArrangement = Arrangement.SpaceBetween,

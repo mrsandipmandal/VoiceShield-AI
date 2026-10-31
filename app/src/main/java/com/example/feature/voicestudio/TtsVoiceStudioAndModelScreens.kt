@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,9 +22,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
@@ -54,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import com.example.core.database.VoiceModelEntity
 import com.example.domain.model.CapabilitySupportStatus
 import com.example.domain.model.ModelInstallStatus
+import com.example.domain.model.VoiceGender
 import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceMood
 import com.example.domain.model.VoiceShieldSettings
@@ -66,8 +64,8 @@ import com.example.ui.theme.CyanTelemetry
 import com.example.ui.theme.EmeraldShield
 
 /**
- * Screen 4: TTS Voice Studio — 12 Selectable Voice Mood Presets, Prosody Controls
- * (Speed, Pitch, Volume, Pauses, Sentence Emphasis), Prosody vs Native Emotion disclosure,
+ * Screen 4: TTS Voice Studio — Voice Gender Selector, 12 Selectable Voice Mood Presets,
+ * Prosody Controls (Speed, Pitch, Volume, Pauses, Sentence Emphasis), Prosody vs Native Emotion disclosure,
  * and Live Offline Synthesis Preview.
  */
 @OptIn(ExperimentalLayoutApi::class)
@@ -92,6 +90,49 @@ fun TtsVoiceStudioScreen(
             .testTag("tts_voice_studio_screen"),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Voice Gender & Language Selection Card
+        SectionHeader(
+            title = "Voice Gender & Language",
+            subtitle = "Configure fundamental vocal tract timbre (Female / Male / Neutral) & active language"
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("Voice Gender", style = MaterialTheme.typography.titleSmall)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    VoiceGender.entries.forEach { gender ->
+                        FilterChip(
+                            selected = settings.voiceGender == gender,
+                            onClick = { onUpdateSettings { it.copy(voiceGender = gender) } },
+                            label = { Text(gender.displayName) },
+                            modifier = Modifier.testTag("gender_chip_${gender.name}")
+                        )
+                    }
+                }
+                Text("Synthesis Language", style = MaterialTheme.typography.titleSmall)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    VoiceLanguage.entries.forEach { lang ->
+                        FilterChip(
+                            selected = settings.language == lang,
+                            onClick = { onUpdateSettings { it.copy(language = lang) } },
+                            label = { Text(lang.displayName) }
+                        )
+                    }
+                }
+            }
+        }
+
         SectionHeader(
             title = "12 Expressive Voice Mood Presets",
             subtitle = "Select a receptionist persona to configure speed, pitch, volume, pauses, and emphasis"
@@ -205,7 +246,7 @@ fun TtsVoiceStudioScreen(
         // Live Voice Audition & Preview Box
         SectionHeader(
             title = "Offline Voice Audition & Preview",
-            subtitle = "Synthesize and listen offline before applying to incoming calls"
+            subtitle = "Synthesize and listen offline before streaming into SIP calls"
         )
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -223,7 +264,7 @@ fun TtsVoiceStudioScreen(
                 OutlinedTextField(
                     value = previewSampleText,
                     onValueChange = { previewSampleText = it },
-                    label = { Text("Audition Script (${settings.language.displayName})") },
+                    label = { Text("Audition Script (${settings.language.displayName} • ${settings.voiceGender.displayName})") },
                     minLines = 2,
                     modifier = Modifier.fillMaxWidth()
                 )

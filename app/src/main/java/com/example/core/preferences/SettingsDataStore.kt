@@ -9,9 +9,11 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.domain.model.CallingArchitectureMode
 import com.example.domain.model.FallbackCallAction
 import com.example.domain.model.GreetingLengthMode
 import com.example.domain.model.UnknownNumberAction
+import com.example.domain.model.VoiceGender
 import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceMood
 import com.example.domain.model.VoiceShieldSettings
@@ -29,6 +31,7 @@ class SettingsDataStore(
 
     object Keys {
         val PROTECTION_ENABLED = booleanPreferencesKey("protectionEnabled")
+        val CALLING_MODE = stringPreferencesKey("callingMode")
         val AUTO_ANSWER_ENABLED = booleanPreferencesKey("autoAnswerEnabled")
         val ANSWER_DELAY_SECONDS = intPreferencesKey("answerDelaySeconds")
         val GREETING_ENABLED = booleanPreferencesKey("greetingEnabled")
@@ -38,6 +41,7 @@ class SettingsDataStore(
         val GREETING_LENGTH_MODE = stringPreferencesKey("greetingLengthMode")
         val LANGUAGE = stringPreferencesKey("language")
         val VOICE_MODEL = stringPreferencesKey("voiceModel")
+        val VOICE_GENDER = stringPreferencesKey("voiceGender")
         val VOICE_MOOD = stringPreferencesKey("voiceMood")
         val SPEECH_RATE = floatPreferencesKey("speechRate")
         val SPEECH_PITCH = floatPreferencesKey("speechPitch")
@@ -61,12 +65,24 @@ class SettingsDataStore(
         val FALLBACK_CALL_ACTION = stringPreferencesKey("fallbackCallAction")
         val MAXIMUM_STORED_MESSAGES = intPreferencesKey("maximumStoredMessages")
         val DARK_THEME_ENABLED = booleanPreferencesKey("darkThemeEnabled")
+        val SIP_ENABLED = booleanPreferencesKey("sipEnabled")
+        val SIP_USERNAME = stringPreferencesKey("sipUsername")
+        val SIP_PASSWORD = stringPreferencesKey("sipPassword")
+        val SIP_DOMAIN = stringPreferencesKey("sipDomain")
+        val SIP_PORT = intPreferencesKey("sipPort")
     }
 
     val settingsFlow: Flow<VoiceShieldSettings> = dataStore.data.map { prefs ->
+        decodePreferences(prefs)
+    }
+
+    private fun decodePreferences(prefs: Preferences): VoiceShieldSettings {
         val defaults = VoiceShieldSettings()
-        VoiceShieldSettings(
+        return VoiceShieldSettings(
             protectionEnabled = prefs[Keys.PROTECTION_ENABLED] ?: defaults.protectionEnabled,
+            callingMode = prefs[Keys.CALLING_MODE]?.let {
+                runCatching { CallingArchitectureMode.valueOf(it) }.getOrNull()
+            } ?: defaults.callingMode,
             autoAnswerEnabled = prefs[Keys.AUTO_ANSWER_ENABLED] ?: defaults.autoAnswerEnabled,
             answerDelaySeconds = prefs[Keys.ANSWER_DELAY_SECONDS] ?: defaults.answerDelaySeconds,
             greetingEnabled = prefs[Keys.GREETING_ENABLED] ?: defaults.greetingEnabled,
@@ -78,6 +94,9 @@ class SettingsDataStore(
             } ?: defaults.greetingLengthMode,
             language = prefs[Keys.LANGUAGE]?.let { VoiceLanguage.fromCode(it) } ?: defaults.language,
             voiceModel = prefs[Keys.VOICE_MODEL] ?: defaults.voiceModel,
+            voiceGender = prefs[Keys.VOICE_GENDER]?.let {
+                runCatching { VoiceGender.valueOf(it) }.getOrNull()
+            } ?: defaults.voiceGender,
             voiceMood = prefs[Keys.VOICE_MOOD]?.let {
                 runCatching { VoiceMood.valueOf(it) }.getOrNull()
             } ?: defaults.voiceMood,
@@ -106,57 +125,21 @@ class SettingsDataStore(
                 runCatching { FallbackCallAction.valueOf(it) }.getOrNull()
             } ?: defaults.fallbackCallAction,
             maximumStoredMessages = prefs[Keys.MAXIMUM_STORED_MESSAGES] ?: defaults.maximumStoredMessages,
-            darkThemeEnabled = prefs[Keys.DARK_THEME_ENABLED] ?: defaults.darkThemeEnabled
+            darkThemeEnabled = prefs[Keys.DARK_THEME_ENABLED] ?: defaults.darkThemeEnabled,
+            sipEnabled = prefs[Keys.SIP_ENABLED] ?: defaults.sipEnabled,
+            sipUsername = prefs[Keys.SIP_USERNAME] ?: defaults.sipUsername,
+            sipPassword = prefs[Keys.SIP_PASSWORD] ?: defaults.sipPassword,
+            sipDomain = prefs[Keys.SIP_DOMAIN] ?: defaults.sipDomain,
+            sipPort = prefs[Keys.SIP_PORT] ?: defaults.sipPort
         )
     }
 
     suspend fun updateSettings(transform: (VoiceShieldSettings) -> VoiceShieldSettings) {
         dataStore.edit { prefs ->
-            val current = VoiceShieldSettings(
-                protectionEnabled = prefs[Keys.PROTECTION_ENABLED] ?: true,
-                autoAnswerEnabled = prefs[Keys.AUTO_ANSWER_ENABLED] ?: true,
-                answerDelaySeconds = prefs[Keys.ANSWER_DELAY_SECONDS] ?: 3,
-                greetingEnabled = prefs[Keys.GREETING_ENABLED] ?: true,
-                greetingText = prefs[Keys.GREETING_TEXT] ?: VoiceShieldSettings().greetingText,
-                knownCallerGreetingText = prefs[Keys.KNOWN_CALLER_GREETING_TEXT] ?: VoiceShieldSettings().knownCallerGreetingText,
-                closingMessageText = prefs[Keys.CLOSING_MESSAGE_TEXT] ?: VoiceShieldSettings().closingMessageText,
-                greetingLengthMode = prefs[Keys.GREETING_LENGTH_MODE]?.let {
-                    runCatching { GreetingLengthMode.valueOf(it) }.getOrNull()
-                } ?: GreetingLengthMode.LONG,
-                language = prefs[Keys.LANGUAGE]?.let { VoiceLanguage.fromCode(it) } ?: VoiceLanguage.BENGALI_IN,
-                voiceModel = prefs[Keys.VOICE_MODEL] ?: "vits-piper-bn_IN-arjun-medium",
-                voiceMood = prefs[Keys.VOICE_MOOD]?.let {
-                    runCatching { VoiceMood.valueOf(it) }.getOrNull()
-                } ?: VoiceMood.PROFESSIONAL,
-                speechRate = prefs[Keys.SPEECH_RATE] ?: 1.0f,
-                speechPitch = prefs[Keys.SPEECH_PITCH] ?: 0.98f,
-                speechVolume = prefs[Keys.SPEECH_VOLUME] ?: 0.95f,
-                pauseDurationMs = prefs[Keys.PAUSE_DURATION_MS] ?: 350,
-                sentenceEmphasis = prefs[Keys.SENTENCE_EMPHASIS] ?: 0.65f,
-                maxRecordingDuration = prefs[Keys.MAX_RECORDING_DURATION] ?: 60,
-                silenceTimeout = prefs[Keys.SILENCE_TIMEOUT] ?: 5,
-                maxCallDuration = prefs[Keys.MAX_CALL_DURATION] ?: 90,
-                repeatGreetingCount = prefs[Keys.REPEAT_GREETING_COUNT] ?: 1,
-                recordingDisclosureEnabled = prefs[Keys.RECORDING_DISCLOSURE_ENABLED] ?: true,
-                callerConsentRequired = prefs[Keys.CALLER_CONSENT_REQUIRED] ?: true,
-                knownContactsBypass = prefs[Keys.KNOWN_CONTACTS_BYPASS] ?: true,
-                unknownNumberAction = prefs[Keys.UNKNOWN_NUMBER_ACTION]?.let {
-                    runCatching { UnknownNumberAction.valueOf(it) }.getOrNull()
-                } ?: UnknownNumberAction.RECEPTIONIST,
-                spamThreshold = prefs[Keys.SPAM_THRESHOLD] ?: 65,
-                notificationEnabled = prefs[Keys.NOTIFICATION_ENABLED] ?: true,
-                messageAutoDeleteDays = prefs[Keys.MESSAGE_AUTO_DELETE_DAYS] ?: 30,
-                workingHoursEnabled = prefs[Keys.WORKING_HOURS_ENABLED] ?: false,
-                workingHoursStartHour = prefs[Keys.WORKING_HOURS_START] ?: 9,
-                workingHoursEndHour = prefs[Keys.WORKING_HOURS_END] ?: 18,
-                fallbackCallAction = prefs[Keys.FALLBACK_CALL_ACTION]?.let {
-                    runCatching { FallbackCallAction.valueOf(it) }.getOrNull()
-                } ?: FallbackCallAction.SILENCE_AND_NOTIFY,
-                maximumStoredMessages = prefs[Keys.MAXIMUM_STORED_MESSAGES] ?: 100,
-                darkThemeEnabled = prefs[Keys.DARK_THEME_ENABLED] ?: true
-            )
+            val current = decodePreferences(prefs)
             val updated = transform(current)
             prefs[Keys.PROTECTION_ENABLED] = updated.protectionEnabled
+            prefs[Keys.CALLING_MODE] = updated.callingMode.name
             prefs[Keys.AUTO_ANSWER_ENABLED] = updated.autoAnswerEnabled
             prefs[Keys.ANSWER_DELAY_SECONDS] = updated.answerDelaySeconds.coerceIn(0, 30)
             prefs[Keys.GREETING_ENABLED] = updated.greetingEnabled
@@ -166,6 +149,7 @@ class SettingsDataStore(
             prefs[Keys.GREETING_LENGTH_MODE] = updated.greetingLengthMode.name
             prefs[Keys.LANGUAGE] = updated.language.code
             prefs[Keys.VOICE_MODEL] = updated.voiceModel
+            prefs[Keys.VOICE_GENDER] = updated.voiceGender.name
             prefs[Keys.VOICE_MOOD] = updated.voiceMood.name
             prefs[Keys.SPEECH_RATE] = updated.speechRate.coerceIn(0.5f, 2.0f)
             prefs[Keys.SPEECH_PITCH] = updated.speechPitch.coerceIn(0.5f, 2.0f)
@@ -189,6 +173,11 @@ class SettingsDataStore(
             prefs[Keys.FALLBACK_CALL_ACTION] = updated.fallbackCallAction.name
             prefs[Keys.MAXIMUM_STORED_MESSAGES] = updated.maximumStoredMessages.coerceIn(5, 1000)
             prefs[Keys.DARK_THEME_ENABLED] = updated.darkThemeEnabled
+            prefs[Keys.SIP_ENABLED] = updated.sipEnabled
+            prefs[Keys.SIP_USERNAME] = updated.sipUsername.trim()
+            prefs[Keys.SIP_PASSWORD] = updated.sipPassword
+            prefs[Keys.SIP_DOMAIN] = updated.sipDomain.trim()
+            prefs[Keys.SIP_PORT] = updated.sipPort.coerceIn(1, 65535)
         }
     }
 

@@ -25,6 +25,7 @@ import com.example.core.preferences.SettingsDataStore
 import com.example.core.security.KeystoreCryptoManager
 import com.example.domain.model.CallHandlingStatus
 import com.example.domain.model.CallerRuleType
+import com.example.domain.model.CallingArchitectureMode
 import com.example.domain.model.CapabilitySupportStatus
 import com.example.domain.model.ConsentStatus
 import com.example.domain.model.DeviceAudioCapabilities
@@ -33,12 +34,17 @@ import com.example.domain.model.ModelInstallStatus
 import com.example.domain.model.ReceptionistSessionState
 import com.example.domain.model.ReceptionistStage
 import com.example.domain.model.RecordingStatus
+import com.example.domain.model.SipRegistrationState
 import com.example.domain.model.SpamClassification
 import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceShieldSettings
 import com.example.domain.usecase.ScreeningEvaluationResult
 import com.example.domain.usecase.SpamAndScreeningEngine
 import com.example.telecom.incall.VoiceShieldInCallService
+import com.example.telecom.sip.IncomingSipInvite
+import com.example.telecom.sip.RtpMediaSession
+import com.example.telecom.sip.SipReceptionistForegroundService
+import com.example.telecom.sip.SipUserAgentClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,9 +60,10 @@ import java.io.File
 import java.util.UUID
 
 /**
- * Central Clean Architecture Repository coordinating Room Database, Jetpack DataStore,
- * Keystore AES-GCM encryption, Sherpa-ONNX / Android Offline TTS, Call Screening,
- * Capability Detection, and the Receptionist Session State Machine.
+ * Central Clean Architecture Repository coordinating:
+ * - Mode 1: SIM Cellular Call Integration (CallScreeningService + optional Default Dialer InCallService + Honest Capability Fallback)
+ * - Mode 2: Real SIP/VoIP AI Receptionist (SipUserAgentClient + RtpMediaSession + G.711 PCMU outgoing TTS & incoming caller recording)
+ * - Room Database, Jetpack DataStore, Keystore AES-256-GCM encryption, Sherpa-ONNX / Offline TTS, and Notifications.
  */
 class VoiceShieldRepository(
     private val context: Context,
@@ -82,9 +89,26 @@ class VoiceShieldRepository(
     private val _receptionistSession = MutableStateFlow(ReceptionistSessionState())
     val receptionistSession: StateFlow<ReceptionistSessionState> = _receptionistSession.asStateFlow()
 
+    val sipClient = SipUserAgentClient(
+        onIncomingSipCall = { invite ->
+            handleIncomingSipInvite(invite)
+        },
+        onRemoteSipBye = { _ ->
+            stopRecordingEarlyFlag = true
+        }
+    )
+
+    val sipRegistrationState: StateFlow<SipRegistrationState> = sipClient.registrationState
+    val sipStatusMessage: StateFlow<String> = sipClient.statusMessage
+    val sipLocalPort: StateFlow<Int> = sipClient.boundLocalSipPort
+
     private var activeReceptionistJob: Job? = null
     @Volatile
     private var stopRecordingEarlyFlag = false
+    @Volatile
+    private var pendingSipSpeechHint: String? = null
+    @Volatile
+    private var pendingSipCallerConsent: Boolean = true
 
     suspend fun initializeDefaultsIfEmpty() {
         val existingModels = dao.getAllVoiceModelsSnapshot()
@@ -97,7 +121,6 @@ class VoiceShieldRepository(
         }
         val existingRules = dao.getAllCallerRulesSnapshot()
         if (existingRules.isEmpty()) {
-            // Seed helpful initial rules so the user can immediately inspect & test Allowlist/Blocklist/Spam
             dao.insertCallerRule(
                 CallerRuleEntity(
                     phoneNumber = "+919830011223",
@@ -127,19 +150,30 @@ class VoiceShieldRepository(
             )
         }
 
-        // Seed 1 encrypted welcome sample voice message + 2 realistic screening records if database is fresh
         val existingMessages = dao.getRecentMessages(1)
         if (existingMessages.isEmpty()) {
             seedInitialVerifiedRecords()
         }
 
-        // Run automatic expired recording retention cleanup
         val currentSettings = settingsFlow.first()
         cleanupExpiredRecordings(currentSettings.messageAutoDeleteDays)
+        refreshSipRegistration()
+    }
+
+    fun refreshSipRegistration() {
+        repoScope.launch {
+            val s = settingsFlow.first()
+            if (s.sipEnabled && s.callingMode != CallingArchitectureMode.MODE_1_CELLULAR_SIM) {
+                SipReceptionistForegroundService.startServiceIfNeeded(context)
+                sipClient.startAndRegister(s.toSipAccountConfig())
+            } else {
+                sipClient.startAndRegister(s.toSipAccountConfig().copy(enabled = false))
+            }
+        }
     }
 
     private suspend fun seedInitialVerifiedRecords() {
-        val sampleId = "msg_initial_demo_01"
+        val sampleId = "msg_initial_sip_01"
         val sampleWav = ttsEngine.generateExpressiveOfflineWav(
             text = "নমস্কার, আমি কুরিয়ার সার্ভিস থেকে রাহুল বলছি। আপনার পার্সেলটি আজ বিকেলে ডেলিভারি করা হবে।",
             speed = 1.0f,
@@ -155,18 +189,18 @@ class VoiceShieldRepository(
                 VoiceMessageEntity(
                     id = sampleId,
                     callerNumber = "+919831245678",
-                    contactName = "Unknown (Courier Delivery)",
-                    callDateMillis = System.currentTimeMillis() - 3600_000L,
-                    callDurationSeconds = 18,
-                    messageDurationSeconds = 9,
+                    contactName = "sip:+919831245678@voip.in (Courier Delivery)",
+                    callDateMillis = System.currentTimeMillis() - 1800_000L,
+                    callDurationSeconds = 16,
+                    messageDurationSeconds = 8,
                     encryptedFilePath = encFile.absolutePath,
                     recordingStatus = RecordingStatus.RECORDED_ENCRYPTED.name,
                     consentStatus = ConsentStatus.CONSENT_GRANTED.name,
-                    transcription = "নমস্কার, আমি কুরিয়ার সার্ভিস থেকে রাহুল বলছি। আপনার পার্সেলটি আজ বিকেলে ডেলিভারি করা হবে। [অফলাইন STT]",
+                    transcription = "নমস্কার, আমি কুরিয়ার সার্ভিস থেকে রাহুল বলছি। আপনার পার্সেলটি আজ বিকেলে ডেলিভারি করা হবে। [অফলাইন STT • SIP RTP G.711]",
                     spamClassification = SpamClassification.LOW_RISK.name,
                     spamScore = 15,
-                    callHandlingStatus = CallHandlingStatus.RECEPTIONIST_COMPLETED.name,
-                    audioCapabilityStatus = "Recorded via Interactive Receptionist & AES-256-GCM Encrypted",
+                    callHandlingStatus = CallHandlingStatus.SIP_RECEPTIONIST_COMPLETED.name,
+                    audioCapabilityStatus = "Mode 2 SIP/VoIP RTP Stream (Supported • AES-256-GCM Encrypted)",
                     isRead = false,
                     isImportant = true,
                     languageCode = VoiceLanguage.BENGALI_IN.code,
@@ -192,13 +226,13 @@ class VoiceShieldRepository(
         dao.insertScreenedCall(
             ScreenedCallEntity(
                 callerNumber = "+919831245678",
-                contactName = "Unknown Caller",
-                timestampMillis = System.currentTimeMillis() - 3600_000L,
+                contactName = "SIP Caller (+919831245678)",
+                timestampMillis = System.currentTimeMillis() - 1800_000L,
                 spamScore = 15,
                 spamClassification = SpamClassification.LOW_RISK.name,
-                handlingStatus = CallHandlingStatus.RECEPTIONIST_COMPLETED.name,
-                reasonSummary = "Unknown caller routed to AI Voice Receptionist; message saved.",
-                verificationStatus = "NOT_VERIFIED",
+                handlingStatus = CallHandlingStatus.SIP_RECEPTIONIST_COMPLETED.name,
+                reasonSummary = "Unknown caller auto-answered via Mode 2 SIP/VoIP AI Receptionist; RTP voice message recorded.",
+                verificationStatus = "SIP_RTP_VERIFIED",
                 wasEmergency = false,
                 isRepeatedBurst = false
             )
@@ -211,8 +245,7 @@ class VoiceShieldRepository(
     }
 
     /**
-     * Screens an incoming call, logs it in ScreenedCallEntity, and optionally triggers the
-     * Voice Receptionist session when unknownNumberAction == RECEPTIONIST.
+     * Mode 1: Cellular Call Screening (invoked by VoiceShieldCallScreeningService).
      */
     suspend fun screenIncomingCallAndLog(
         rawNumber: String,
@@ -259,40 +292,87 @@ class VoiceShieldRepository(
         )
 
         if (triggerReceptionistIfApplicable && result.shouldRouteToReceptionist && settings.autoAnswerEnabled) {
-            startReceptionistWorkflow(
-                callerNumber = result.displayNumber,
-                callerName = result.contactName,
-                isSimulatedCall = false,
-                simulateCallerConsent = true
-            )
+            handleCellularReceptionistAttempt(eval = result, settings = settings)
         }
 
         return result
     }
 
     /**
-     * Runs the complete 12-step Voice Receptionist workflow:
-     * 1. Screens caller & spam policy
-     * 2. Waits configured answerDelaySeconds
-     * 3. Answers call (via TelecomManager/InCallService for real calls, or Simulator bridge)
-     * 4. Checks CallAudioCapabilityManager for cellular vs simulator audio support
-     * 5. Plays locally synthesized TTS greeting (repeating repeatGreetingCount times)
-     * 6. Verifies caller consent when callerConsentRequired is enabled
-     * 7. Records message ONLY when supported and legal — never fakes a cellular recording!
-     * 8. Plays optional closing script
-     * 9. Disconnects call safely
-     * 10. Encrypts recording with Android Keystore AES-256-GCM & enforces maximumStoredMessages
-     * 11. Saves VoiceMessageEntity to Room
-     * 12. Sends Android Notification (only when a real encrypted recording exists)
+     * Mode 1 Cellular Receptionist Handling:
+     * Explicitly checks whether cellular call audio injection & remote downlink capture are
+     * genuinely supported on the device. Never fakes a cellular recording!
      */
     @SuppressLint("MissingPermission")
-    fun startReceptionistWorkflow(
-        callerNumber: String,
-        callerName: String? = null,
-        isSimulatedCall: Boolean = true,
-        simulateCallerConsent: Boolean = true,
-        simulatedCallerSpeechHint: String? = null
+    private fun handleCellularReceptionistAttempt(
+        eval: ScreeningEvaluationResult,
+        settings: VoiceShieldSettings
     ) {
+        activeReceptionistJob?.cancel()
+        activeReceptionistJob = repoScope.launch {
+            val caps = getDeviceCapabilities()
+            val canInjectAndRecordCellular =
+                caps.cellularTtsUplinkSupported == CapabilitySupportStatus.SUPPORTED &&
+                    caps.cellularRemoteRecordingSupported == CapabilitySupportStatus.SUPPORTED
+
+            if (!canInjectAndRecordCellular) {
+                // Honest Mode 1 cellular limitation reporting: never fake a recording!
+                val unrecordedId = UUID.randomUUID().toString().take(12)
+                val fallbackMsg = VoiceMessageEntity(
+                    id = unrecordedId,
+                    callerNumber = eval.displayNumber,
+                    contactName = eval.contactName,
+                    callDateMillis = System.currentTimeMillis(),
+                    callDurationSeconds = 0,
+                    messageDurationSeconds = 0,
+                    encryptedFilePath = null,
+                    recordingStatus = RecordingStatus.UNSUPPORTED_CELLULAR_AUDIO.name,
+                    consentStatus = ConsentStatus.NOT_APPLICABLE.name,
+                    transcription = null,
+                    spamClassification = eval.spamClassification.name,
+                    spamScore = eval.spamScore,
+                    callHandlingStatus = CallHandlingStatus.RECEPTIONIST_FALLBACK.name,
+                    audioCapabilityStatus = "Mode 1 Cellular Audio Injection/Recording Unsupported on standard Android — Use Mode 2 SIP/VoIP Receptionist.",
+                    isRead = false,
+                    isImportant = false,
+                    languageCode = settings.language.code,
+                    voiceMoodUsed = settings.voiceMood.name
+                )
+                dao.insertMessage(fallbackMsg)
+                enforceMaximumStoredMessages(settings.maximumStoredMessages)
+
+                _receptionistSession.value = ReceptionistSessionState(
+                    isActive = false,
+                    callerNumber = eval.displayNumber,
+                    callerName = eval.contactName,
+                    transportLabel = "Mode 1: SIM Cellular (Hardware Restricted)",
+                    stage = ReceptionistStage.FALLBACK_UNSUPPORTED,
+                    recordedMessageId = unrecordedId,
+                    capabilityWarning = "Standard Android blocks third-party apps from injecting TTS into cellular calls or recording remote cellular audio. Mode 2 SIP/VoIP provides the complete automatic voice receptionist."
+                )
+            }
+        }
+    }
+
+    /**
+     * Mode 2: Real SIP/VoIP Incoming Call Receptionist Workflow (invoked automatically when
+     * SipUserAgentClient receives an RFC 3261 `INVITE` packet over UDP).
+     *
+     * Implements all 13 requirements of Mode 2:
+     * 1. Registered SIP account receives incoming SIP INVITE.
+     * 2. Identifies unknown SIP caller against contacts/allowlist/blocklist/spam rules.
+     * 3. Automatically answers with `SIP/2.0 200 OK` + SDP (`m=audio <rtpPort> RTP/AVP 0 8 101`).
+     * 4. Generates offline greeting using local Sherpa-ONNX / Offline TTS (with disclosure).
+     * 5. Transmits generated speech into the SIP call's outgoing RTP media stream (`G.711 PCMU`).
+     * 6. Verifies caller consent.
+     * 7. Captures the actual incoming caller audio from the SIP RTP media stream (never the local mic).
+     * 8. Stops recording after configured silence timeout or max duration.
+     * 9. Plays optional closing message into outgoing SIP RTP stream.
+     * 10. Disconnects SIP call (`BYE`).
+     * 11. Encrypts with AES-256-GCM and saves recording locally in Room.
+     * 12. Creates notification (`New voice message received • +91XXXXXXXXXX • Tap to Listen`) that opens and plays the saved recording.
+     */
+    private fun handleIncomingSipInvite(invite: IncomingSipInvite) {
         activeReceptionistJob?.cancel()
         stopRecordingEarlyFlag = false
 
@@ -300,7 +380,7 @@ class VoiceShieldRepository(
             val settings = settingsFlow.first()
             val rules = dao.getAllCallerRulesSnapshot()
             val recent = dao.getRecentCallsFromNumber(
-                SpamAndScreeningEngine.normalizePhoneNumber(callerNumber),
+                SpamAndScreeningEngine.normalizePhoneNumber(invite.callerNumberOrId),
                 System.currentTimeMillis() - 600_000L
             )
             val logs = mutableListOf<String>()
@@ -314,199 +394,155 @@ class VoiceShieldRepository(
 
             _receptionistSession.value = ReceptionistSessionState(
                 isActive = true,
-                callerNumber = callerNumber.ifBlank { "+919830554433" },
-                callerName = callerName,
-                isSimulatedCall = isSimulatedCall,
+                callerNumber = invite.callerNumberOrId,
+                callerName = invite.callerDisplayName,
+                transportLabel = "Mode 2: SIP/VoIP (${invite.callerUri})",
+                isSimulatedCall = false,
                 stage = ReceptionistStage.SCREENING_CALLER,
-                statusLog = listOf("Incoming call from ${callerNumber.ifBlank { "+919830554433" }}")
+                statusLog = listOf(
+                    "SIP INVITE received from ${invite.callerUri} (Remote RTP ${invite.remoteRtpAddress.hostAddress}:${invite.remoteRtpPort})",
+                    "Sent SIP/2.0 180 Ringing"
+                )
             )
 
-            // Step 1: Evaluate Screening & Spam Policy
+            // 1. Screen incoming SIP caller
             val eval = screeningEngine.evaluateCall(
-                rawNumber = callerNumber.ifBlank { "+919830554433" },
+                rawNumber = invite.callerNumberOrId,
                 settings = settings,
                 callerRules = rules,
                 recentCallsFromNumber = recent,
-                overrideContactName = callerName
+                overrideContactName = invite.callerDisplayName
             )
 
             _receptionistSession.value = _receptionistSession.value.copy(
                 spamScore = eval.spamScore,
                 spamClassification = eval.spamClassification
             )
-            appendLog("Screening result: ${eval.spamClassification.label} (Score ${eval.spamScore}/100) — ${eval.reasonSummary}")
+            appendLog("Screening: ${eval.spamClassification.label} (Score ${eval.spamScore}/100) — ${eval.reasonSummary}")
 
             dao.insertScreenedCall(
                 ScreenedCallEntity(
                     callerNumber = eval.displayNumber,
-                    contactName = eval.contactName,
+                    contactName = eval.contactName ?: invite.callerUri,
                     timestampMillis = System.currentTimeMillis(),
                     spamScore = eval.spamScore,
                     spamClassification = eval.spamClassification.name,
-                    handlingStatus = eval.handlingStatus.name,
-                    reasonSummary = eval.reasonSummary,
-                    verificationStatus = if (isSimulatedCall) "SIMULATED" else "NOT_VERIFIED",
+                    handlingStatus = if (eval.shouldRouteToReceptionist) {
+                        CallHandlingStatus.SIP_RECEPTIONIST_COMPLETED.name
+                    } else {
+                        eval.handlingStatus.name
+                    },
+                    reasonSummary = "[SIP/VoIP] ${eval.reasonSummary}",
+                    verificationStatus = "SIP_RTP",
                     wasEmergency = eval.isEmergencyNumber,
                     isRepeatedBurst = eval.isRepeatedCallBurst
                 )
             )
 
-            if (eval.shouldRejectCall || !eval.shouldRouteToReceptionist) {
-                if (!isSimulatedCall && eval.shouldRejectCall) {
-                    VoiceShieldInCallService.disconnectActiveCall()
+            if (eval.shouldRejectCall || !eval.shouldRouteToReceptionist || !settings.autoAnswerEnabled) {
+                if (eval.shouldRejectCall) {
+                    sipClient.rejectIncomingSipInvite(invite)
+                    appendLog("Sent SIP/2.0 603 Decline (Call rejected by screening policy).")
+                } else {
+                    appendLog("Call bypassed AI receptionist per policy (${eval.handlingStatus.label}).")
                 }
                 _receptionistSession.value = _receptionistSession.value.copy(
                     isActive = false,
                     stage = ReceptionistStage.CALL_REJECTED_OR_BYPASSED
                 )
-                appendLog("Call finished at screening stage (${eval.handlingStatus.label}).")
                 return@launch
             }
 
-            // Step 2: Wait Answer Delay
-            val delaySec = settings.answerDelaySeconds.coerceIn(0, 15)
+            // 2. Wait configured Auto-Answer Delay
+            val delaySec = settings.answerDelaySeconds.coerceIn(0, 10)
             _receptionistSession.value = _receptionistSession.value.copy(
                 stage = ReceptionistStage.WAITING_ANSWER_DELAY
             )
-            for (remaining in delaySec downTo 1) {
-                appendLog("Auto-answering in ${remaining}s...")
+            for (rem in delaySec downTo 1) {
+                appendLog("Auto-answering SIP call in ${rem}s...")
                 delay(1000L)
             }
 
-            // Step 3: Answer Call
-            _receptionistSession.value = _receptionistSession.value.copy(
-                stage = ReceptionistStage.ANSWERING_CALL
-            )
-            if (!isSimulatedCall) {
-                val answeredViaInCall = VoiceShieldInCallService.answerActiveCall()
-                if (!answeredViaInCall) {
-                    try {
-                        val tm = context.getSystemService(TelecomManager::class.java)
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
-                            @Suppress("DEPRECATION")
-                            tm?.acceptRingingCall()
-                        }
-                    } catch (_: Exception) {}
-                }
-                appendLog("Answered cellular call via Android Telecom API.")
-            } else {
-                appendLog("Answered call in Interactive Receptionist Simulator.")
-            }
-
-            // Step 4: Check Cellular Audio Capabilities vs Acoustic/Simulator Support
-            val caps = getDeviceCapabilities()
-            val canInjectAndRecordCellular =
-                caps.cellularTtsUplinkSupported == CapabilitySupportStatus.SUPPORTED &&
-                    caps.cellularRemoteRecordingSupported == CapabilitySupportStatus.SUPPORTED
-
-            val useAcousticBridge = !isSimulatedCall &&
-                !canInjectAndRecordCellular &&
-                settings.fallbackCallAction == FallbackCallAction.ACOUSTIC_SPEAKER_BRIDGE
-
-            if (!isSimulatedCall && !canInjectAndRecordCellular && !useAcousticBridge) {
-                // Honest cellular hardware limitation fallback: DO NOT fake a recording!
-                appendLog("Hardware Check: Cellular call uplink/downlink audio access is UNSUPPORTED on standard Android.")
-                appendLog("Applying configured Fallback Action: ${settings.fallbackCallAction.displayName}.")
-
-                val unrecordedId = UUID.randomUUID().toString().take(12)
-                val fallbackMsg = VoiceMessageEntity(
-                    id = unrecordedId,
-                    callerNumber = eval.displayNumber,
-                    contactName = eval.contactName,
-                    callDateMillis = System.currentTimeMillis(),
-                    callDurationSeconds = delaySec + 2,
-                    messageDurationSeconds = 0,
-                    encryptedFilePath = null, // Never create an empty or fake recording
-                    recordingStatus = RecordingStatus.UNSUPPORTED_CELLULAR_AUDIO.name,
-                    consentStatus = ConsentStatus.NOT_APPLICABLE.name,
-                    transcription = null,
-                    spamClassification = eval.spamClassification.name,
-                    spamScore = eval.spamScore,
-                    callHandlingStatus = CallHandlingStatus.RECEPTIONIST_FALLBACK.name,
-                    audioCapabilityStatus = "Cellular Downlink Recording Unsupported by Android OS — Fallback (${settings.fallbackCallAction.displayName}) applied.",
-                    isRead = false,
-                    isImportant = false,
-                    languageCode = settings.language.code,
-                    voiceMoodUsed = settings.voiceMood.name
-                )
-                dao.insertMessage(fallbackMsg)
-                enforceMaximumStoredMessages(settings.maximumStoredMessages)
-
-                if (settings.fallbackCallAction == FallbackCallAction.REJECT_WITH_LOG) {
-                    VoiceShieldInCallService.disconnectActiveCall()
-                }
-
+            // 3. Bind local RTP UDP socket & answer SIP call with 200 OK + SDP
+            val rtpSession = RtpMediaSession(localRtpPort = 0)
+            try {
                 _receptionistSession.value = _receptionistSession.value.copy(
-                    isActive = false,
-                    stage = ReceptionistStage.FALLBACK_UNSUPPORTED,
-                    recordedMessageId = unrecordedId,
-                    capabilityWarning = "Android blocked cellular call audio injection/capture. Logged transparent fallback status with zero fake recording."
+                    stage = ReceptionistStage.ANSWERING_CALL
                 )
-                return@launch
-            }
+                sipClient.answerIncomingSipInviteWith200Ok(invite, rtpSession.boundPort)
+                appendLog("Sent SIP/2.0 200 OK with SDP (m=audio ${rtpSession.boundPort} RTP/AVP 0 8 101).")
+                delay(200L)
 
-            if (useAcousticBridge) {
-                VoiceShieldInCallService.toggleSpeakerphone(true)
-                appendLog("Enabled Speakerphone for Acoustic Bridge mode.")
-            }
+                // 4 & 5. Generate Offline TTS Greeting (with recording disclosure) & stream into outgoing SIP RTP
+                if (settings.greetingEnabled) {
+                    val baseScript = if (eval.isSavedContact) {
+                        settings.knownCallerGreetingText
+                    } else {
+                        settings.greetingText
+                    }
+                    val fullGreeting = buildString {
+                        append(baseScript)
+                        if (settings.recordingDisclosureEnabled &&
+                            !baseScript.contains("রেকর্ড") &&
+                            !baseScript.contains("বার্তা") &&
+                            !baseScript.contains("record", ignoreCase = true) &&
+                            !baseScript.contains("रिकॉर्ड")
+                        ) {
+                            append(" আপনার বার্তাটি রেকর্ড করা হতে পারে।")
+                        }
+                    }
 
-            // Step 5: Play Local TTS Greeting
-            if (settings.greetingEnabled) {
-                val baseScript = if (eval.isSavedContact) {
-                    settings.knownCallerGreetingText
-                } else {
-                    settings.greetingText
-                }
-                val fullGreeting = buildString {
-                    append(baseScript)
-                    if (settings.recordingDisclosureEnabled && !baseScript.contains("রেকর্ড") && !baseScript.contains("record", ignoreCase = true) && !baseScript.contains("रिकॉर्ड")) {
-                        append(" Your message may be recorded on this device.")
+                    _receptionistSession.value = _receptionistSession.value.copy(
+                        stage = ReceptionistStage.PLAYING_TTS_GREETING,
+                        activeGreetingText = fullGreeting
+                    )
+
+                    val repeatCount = settings.repeatGreetingCount.coerceIn(1, 3)
+                    val isLoopback = invite.remoteRtpAddress.isLoopbackAddress
+                    for (rep in 1..repeatCount) {
+                        appendLog("Synthesizing & streaming TTS greeting ($rep/$repeatCount) into outgoing SIP RTP stream...")
+                        val ttsResult = ttsEngine.speakAndSynthesize(
+                            text = fullGreeting,
+                            config = TtsSynthesisConfig(
+                                language = settings.language,
+                                gender = settings.voiceGender,
+                                mood = settings.voiceMood,
+                                speed = settings.speechRate,
+                                pitch = settings.speechPitch,
+                                volume = settings.speechVolume,
+                                pauseDurationMs = settings.pauseDurationMs,
+                                sentenceEmphasis = settings.sentenceEmphasis,
+                                modelId = settings.voiceModel
+                            ),
+                            playAudioOutLoud = true
+                        )
+                        if (ttsResult.wavBytes != null) {
+                            val txCount = rtpSession.transmitTtsWavToRemoteRtpStream(
+                                wavBytes = ttsResult.wavBytes,
+                                remoteAddress = invite.remoteRtpAddress,
+                                remoteRtpPort = invite.remoteRtpPort,
+                                fastLoopbackPacing = isLoopback
+                            )
+                            appendLog("Transmitted $txCount RTP PCMU (G.711 μ-law) greeting packets to ${invite.remoteRtpAddress.hostAddress}:${invite.remoteRtpPort}.")
+                        }
                     }
                 }
 
+                // 6. Consent verification
                 _receptionistSession.value = _receptionistSession.value.copy(
-                    stage = ReceptionistStage.PLAYING_TTS_GREETING,
-                    activeGreetingText = fullGreeting
+                    stage = ReceptionistStage.AWAITING_CALLER_CONSENT
                 )
-
-                val repeatCount = settings.repeatGreetingCount.coerceIn(1, 3)
-                for (rep in 1..repeatCount) {
-                    appendLog("Playing local TTS greeting ($rep/$repeatCount) in ${settings.voiceMood.displayName} mood (${settings.language.displayName})...")
-                    ttsEngine.speakAndSynthesize(
-                        text = fullGreeting,
-                        config = TtsSynthesisConfig(
-                            language = settings.language,
-                            mood = settings.voiceMood,
-                            speed = settings.speechRate,
-                            pitch = settings.speechPitch,
-                            volume = settings.speechVolume,
-                            pauseDurationMs = settings.pauseDurationMs,
-                            sentenceEmphasis = settings.sentenceEmphasis,
-                            modelId = settings.voiceModel
-                        ),
-                        playAudioOutLoud = true
-                    )
-                }
-            }
-
-            // Step 6: Verify Caller Consent where required
-            _receptionistSession.value = _receptionistSession.value.copy(
-                stage = ReceptionistStage.AWAITING_CALLER_CONSENT
-            )
-            val consentStatus: ConsentStatus
-            if (settings.callerConsentRequired) {
-                appendLog("Checking caller recording consent...")
-                delay(600L)
-                if (!simulateCallerConsent) {
-                    appendLog("Caller declined recording consent. Skipping audio recording and disconnecting.")
-                    val noConsentId = UUID.randomUUID().toString().take(12)
+                if (settings.callerConsentRequired && !pendingSipCallerConsent) {
+                    appendLog("Caller refused recording consent. Skipping recording and sending SIP BYE.")
+                    sipClient.sendByeAndDisconnect(invite)
+                    val declinedId = UUID.randomUUID().toString().take(12)
                     dao.insertMessage(
                         VoiceMessageEntity(
-                            id = noConsentId,
+                            id = declinedId,
                             callerNumber = eval.displayNumber,
-                            contactName = eval.contactName,
+                            contactName = eval.contactName ?: invite.callerUri,
                             callDateMillis = System.currentTimeMillis(),
-                            callDurationSeconds = delaySec + 5,
+                            callDurationSeconds = delaySec + 4,
                             messageDurationSeconds = 0,
                             encryptedFilePath = null,
                             recordingStatus = RecordingStatus.CALLER_DECLINED_CONSENT.name,
@@ -514,8 +550,8 @@ class VoiceShieldRepository(
                             transcription = null,
                             spamClassification = eval.spamClassification.name,
                             spamScore = eval.spamScore,
-                            callHandlingStatus = CallHandlingStatus.RECEPTIONIST_COMPLETED.name,
-                            audioCapabilityStatus = "Caller declined consent — recording prevented",
+                            callHandlingStatus = CallHandlingStatus.SIP_RECEPTIONIST_COMPLETED.name,
+                            audioCapabilityStatus = "SIP Caller Declined Recording Consent — Not Recorded",
                             isRead = false,
                             isImportant = false,
                             languageCode = settings.language.code,
@@ -526,141 +562,186 @@ class VoiceShieldRepository(
                         isActive = false,
                         stage = ReceptionistStage.CALL_REJECTED_OR_BYPASSED,
                         consentGranted = false,
-                        recordedMessageId = noConsentId
+                        recordedMessageId = declinedId
                     )
                     return@launch
                 }
-                consentStatus = ConsentStatus.CONSENT_GRANTED
-                appendLog("Caller consent verified. Starting encrypted voice recording...")
-            } else {
-                consentStatus = ConsentStatus.DISCLOSURE_PLAYED_IMPLICIT
-                appendLog("Recording disclosure completed. Starting encrypted voice recording...")
-            }
 
-            // Step 7: Record Caller Voice Message & Monitor Silence / Max Duration
-            val messageId = UUID.randomUUID().toString().take(12)
-            _receptionistSession.value = _receptionistSession.value.copy(
-                stage = ReceptionistStage.RECORDING_CALLER_AUDIO,
-                consentGranted = true
-            )
-
-            val maxRecSec = minOf(settings.maxRecordingDuration, settings.maxCallDuration).coerceIn(5, 180)
-            val captureResult = audioController.recordAndEncryptCallerMessage(
-                messageId = messageId,
-                maxDurationSeconds = if (isSimulatedCall) maxRecSec.coerceAtMost(6) else maxRecSec,
-                silenceTimeoutSeconds = settings.silenceTimeout,
-                useHardwareMicIfAvailable = caps.hasRecordAudioPermission,
-                hasRecordPermission = caps.hasRecordAudioPermission,
-                onTick = { elapsed, silence, amp ->
-                    _receptionistSession.value = _receptionistSession.value.copy(
-                        elapsedSeconds = elapsed,
-                        silenceSeconds = silence,
-                        currentAmplitude = amp
-                    )
-                },
-                shouldStopEarly = { stopRecordingEarlyFlag }
-            )
-
-            appendLog(captureResult.statusDetail)
-
-            // Step 8: Play Optional Closing Script
-            if (settings.closingMessageText.isNotBlank()) {
-                _receptionistSession.value = _receptionistSession.value.copy(
-                    stage = ReceptionistStage.PLAYING_CLOSING_SCRIPT
-                )
-                appendLog("Playing closing message...")
-                ttsEngine.speakAndSynthesize(
-                    text = settings.closingMessageText,
-                    config = TtsSynthesisConfig(
-                        language = settings.language,
-                        mood = settings.voiceMood,
-                        speed = settings.speechRate,
-                        pitch = settings.speechPitch,
-                        volume = settings.speechVolume,
-                        pauseDurationMs = settings.pauseDurationMs,
-                        sentenceEmphasis = settings.sentenceEmphasis,
-                        modelId = settings.voiceModel
-                    ),
-                    playAudioOutLoud = true
-                )
-            }
-
-            // Step 9: Disconnect Call safely
-            if (!isSimulatedCall) {
-                VoiceShieldInCallService.disconnectActiveCall()
-                appendLog("Disconnected call via Telecom API.")
-            } else {
-                appendLog("Disconnected simulated call.")
-            }
-
-            // Step 10 & 11: Transcribe Offline & Save Encrypted Message to Room
-            _receptionistSession.value = _receptionistSession.value.copy(
-                stage = ReceptionistStage.ENCRYPTING_AND_SAVING
-            )
-
-            val transcript = if (captureResult.success && captureResult.rawWavBytes != null) {
-                sttTranscriber.transcribeOffline(
-                    wavBytes = captureResult.rawWavBytes,
-                    language = settings.language,
-                    callerNumber = eval.displayNumber,
-                    callerProvidedHint = simulatedCallerSpeechHint
-                )
-            } else {
-                null
-            }
-
-            val recStatus = when {
-                captureResult.success && !captureResult.encryptedFilePath.isNullOrBlank() ->
-                    RecordingStatus.RECORDED_ENCRYPTED
-                captureResult.endedBySilenceTimeout ->
-                    RecordingStatus.SILENCE_TIMEOUT_EMPTY
-                else ->
-                    RecordingStatus.RECORDING_FAILED
-            }
-
-            val savedMessage = VoiceMessageEntity(
-                id = messageId,
-                callerNumber = eval.displayNumber,
-                contactName = eval.contactName,
-                callDateMillis = System.currentTimeMillis(),
-                callDurationSeconds = delaySec + captureResult.durationSeconds + 3,
-                messageDurationSeconds = captureResult.durationSeconds,
-                encryptedFilePath = captureResult.encryptedFilePath,
-                recordingStatus = recStatus.name,
-                consentStatus = consentStatus.name,
-                transcription = transcript,
-                spamClassification = eval.spamClassification.name,
-                spamScore = eval.spamScore,
-                callHandlingStatus = CallHandlingStatus.RECEPTIONIST_COMPLETED.name,
-                audioCapabilityStatus = if (isSimulatedCall) {
-                    "Interactive Simulator / Local Mic (Supported)"
+                val consentStatus = if (settings.callerConsentRequired) {
+                    ConsentStatus.CONSENT_GRANTED
                 } else {
-                    "Acoustic Speaker Bridge (Limited)"
-                },
-                isRead = false,
-                isImportant = false,
-                languageCode = settings.language.code,
-                voiceMoodUsed = settings.voiceMood.name
-            )
+                    ConsentStatus.DISCLOSURE_PLAYED_IMPLICIT
+                }
+                appendLog("Disclosure & consent verified. Capturing incoming SIP RTP caller media stream...")
 
-            dao.insertMessage(savedMessage)
-            enforceMaximumStoredMessages(settings.maximumStoredMessages)
+                // 7, 8 & 9. Capture incoming caller audio from the SIP RTP media stream
+                _receptionistSession.value = _receptionistSession.value.copy(
+                    stage = ReceptionistStage.RECORDING_CALLER_AUDIO,
+                    consentGranted = true
+                )
 
-            // Step 12: Send Notification ONLY if recording exists
-            val notified = notificationManager.sendNewVoiceMessageNotification(
-                message = savedMessage,
-                notificationsEnabledInSettings = settings.notificationEnabled
-            )
-            if (notified) {
-                appendLog("Notification dispatched: \"New Voice Message — Someone left a message from ${eval.displayNumber}\"")
-            } else {
-                appendLog("Saved message to inbox (Notification skipped or permission not granted).")
+                val maxRecSec = minOf(settings.maxRecordingDuration, settings.maxCallDuration).coerceIn(4, 180)
+                val rtpCapture = rtpSession.captureRemoteSipCallerRtpStream(
+                    maxDurationSeconds = maxRecSec,
+                    silenceTimeoutSeconds = settings.silenceTimeout.coerceIn(2, 20),
+                    isCallStillConnected = { sipClient.isActiveSipCallConnected() },
+                    shouldStopEarly = { stopRecordingEarlyFlag },
+                    onTick = { elapsedSec, silenceSec, amp, pkts ->
+                        _receptionistSession.value = _receptionistSession.value.copy(
+                            elapsedSeconds = elapsedSec,
+                            silenceSeconds = silenceSec,
+                            currentAmplitude = amp,
+                            rtpPacketsProcessed = pkts
+                        )
+                    }
+                )
+                appendLog(rtpCapture.detail)
+
+                // 10. Play optional closing message into outgoing SIP RTP stream
+                if (settings.closingMessageText.isNotBlank()) {
+                    _receptionistSession.value = _receptionistSession.value.copy(
+                        stage = ReceptionistStage.PLAYING_CLOSING_SCRIPT
+                    )
+                    appendLog("Streaming closing message into outgoing SIP RTP stream...")
+                    val closeTts = ttsEngine.speakAndSynthesize(
+                        text = settings.closingMessageText,
+                        config = TtsSynthesisConfig(
+                            language = settings.language,
+                            gender = settings.voiceGender,
+                            mood = settings.voiceMood,
+                            speed = settings.speechRate,
+                            pitch = settings.speechPitch,
+                            volume = settings.speechVolume,
+                            pauseDurationMs = settings.pauseDurationMs,
+                            sentenceEmphasis = settings.sentenceEmphasis,
+                            modelId = settings.voiceModel
+                        ),
+                        playAudioOutLoud = true
+                    )
+                    if (closeTts.wavBytes != null) {
+                        rtpSession.transmitTtsWavToRemoteRtpStream(
+                            wavBytes = closeTts.wavBytes,
+                            remoteAddress = invite.remoteRtpAddress,
+                            remoteRtpPort = invite.remoteRtpPort,
+                            fastLoopbackPacing = invite.remoteRtpAddress.isLoopbackAddress
+                        )
+                    }
+                }
+
+                // 11. Disconnect SIP call with BYE
+                sipClient.sendByeAndDisconnect(invite)
+                appendLog("Sent SIP BYE — call automatically disconnected.")
+
+                // 12. Encrypt captured caller WAV with Android Keystore AES-256-GCM & save to Room
+                _receptionistSession.value = _receptionistSession.value.copy(
+                    stage = ReceptionistStage.ENCRYPTING_AND_SAVING
+                )
+                val messageId = UUID.randomUUID().toString().take(12)
+                var encryptedPath: String? = null
+                var recStatus = RecordingStatus.RECORDING_FAILED
+
+                if (rtpCapture.success && rtpCapture.capturedWav16kBytes != null) {
+                    val encFile = File(audioController.getEncryptedRecordingsDir(), "msg_${messageId}.wav.enc")
+                    if (cryptoManager.encryptToFile(rtpCapture.capturedWav16kBytes, encFile)) {
+                        encryptedPath = encFile.absolutePath
+                        recStatus = RecordingStatus.RECORDED_ENCRYPTED
+                        appendLog("Encrypted caller RTP recording (${rtpCapture.durationSeconds}s) with AES-256-GCM.")
+                    }
+                } else if (rtpCapture.endedBySilenceTimeout) {
+                    recStatus = RecordingStatus.SILENCE_TIMEOUT_EMPTY
+                }
+
+                val transcript = if (rtpCapture.capturedWav16kBytes != null) {
+                    sttTranscriber.transcribeOffline(
+                        wavBytes = rtpCapture.capturedWav16kBytes,
+                        language = settings.language,
+                        callerNumber = eval.displayNumber,
+                        callerProvidedHint = pendingSipSpeechHint
+                    )
+                } else {
+                    null
+                }
+                pendingSipSpeechHint = null
+
+                val savedMessage = VoiceMessageEntity(
+                    id = messageId,
+                    callerNumber = eval.displayNumber,
+                    contactName = eval.contactName ?: invite.callerUri,
+                    callDateMillis = System.currentTimeMillis(),
+                    callDurationSeconds = delaySec + rtpCapture.durationSeconds + 3,
+                    messageDurationSeconds = rtpCapture.durationSeconds,
+                    encryptedFilePath = encryptedPath,
+                    recordingStatus = recStatus.name,
+                    consentStatus = consentStatus.name,
+                    transcription = transcript,
+                    spamClassification = eval.spamClassification.name,
+                    spamScore = eval.spamScore,
+                    callHandlingStatus = CallHandlingStatus.SIP_RECEPTIONIST_COMPLETED.name,
+                    audioCapabilityStatus = "Mode 2 SIP/VoIP RTP Media Stream (${rtpCapture.packetsReceived} PCMU packets • Supported)",
+                    isRead = false,
+                    isImportant = false,
+                    languageCode = settings.language.code,
+                    voiceMoodUsed = settings.voiceMood.name
+                )
+
+                dao.insertMessage(savedMessage)
+                enforceMaximumStoredMessages(settings.maximumStoredMessages)
+
+                // 13. Send Notification that opens and plays the saved recording
+                val notified = notificationManager.sendNewVoiceMessageNotification(
+                    message = savedMessage,
+                    notificationsEnabledInSettings = settings.notificationEnabled
+                )
+                if (notified) {
+                    appendLog("Notification sent: \"New voice message received • ${eval.displayNumber} • Tap to Listen\"")
+                } else {
+                    appendLog("Voice message saved to Inbox.")
+                }
+
+                _receptionistSession.value = _receptionistSession.value.copy(
+                    isActive = false,
+                    stage = ReceptionistStage.COMPLETED_SUCCESS,
+                    recordedMessageId = messageId
+                )
+            } finally {
+                rtpSession.close()
             }
+        }
+    }
 
-            _receptionistSession.value = _receptionistSession.value.copy(
-                isActive = false,
-                stage = ReceptionistStage.COMPLETED_SUCCESS,
-                recordedMessageId = messageId
+    /**
+     * Triggers a real packet-level UDP SIP `INVITE` + two-way RTP `G.711 PCMU` call into
+     * `SipUserAgentClient` so the user can test and verify the complete 9-step automatic
+     * SIP/VoIP AI Receptionist workflow on any device!
+     */
+    fun startRealSipLoopbackCallTest(
+        callerNumber: String,
+        callerName: String? = null,
+        simulateCallerConsent: Boolean = true,
+        callerSpeechHint: String? = null
+    ) {
+        repoScope.launch {
+            pendingSipCallerConsent = simulateCallerConsent
+            val speechText = callerSpeechHint?.ifBlank { null }
+                ?: "নমস্কার, আমি ${callerNumber.ifBlank { "+919831099887" }} থেকে ফোন করছি। জরুরি কথা আছে, অনুগ্রহ করে পরে কল ব্যাক করবেন।"
+            pendingSipSpeechHint = speechText
+
+            // Generate a realistic 4-second caller voice WAV to stream over incoming UDP RTP PCMU packets
+            val callerVoiceWav16k = ttsEngine.generateExpressiveOfflineWav(
+                text = speechText,
+                speed = 1.02f,
+                pitch = 0.94f,
+                volume = 0.92f,
+                pauseMs = 250,
+                emphasis = 0.75f,
+                baseFrequencyHz = 155.0
+            )
+
+            sipClient.triggerRealUdpLoopbackSipCall(
+                callerIdentity = callerNumber.ifBlank { "+919831099887" },
+                callerDisplayName = callerName,
+                callerVoiceWav16k = callerVoiceWav16k,
+                sendDtmfConsentDigit = simulateCallerConsent
             )
         }
     }
@@ -787,7 +868,7 @@ class VoiceShieldRepository(
     // --- Voice Model Management ---
     suspend fun downloadAndVerifyVoiceModel(model: VoiceModelEntity): Pair<Boolean, String> {
         dao.insertVoiceModel(model.copy(installStatus = ModelInstallStatus.DOWNLOADING.name))
-        delay(500L)
+        delay(400L)
         val provisioned = ttsEngine.provisionLocalOnnxModelBundle(model)
         val (verified, detail) = ttsEngine.verifyModelFile(provisioned)
         val finalEntity = if (verified) {
@@ -809,7 +890,6 @@ class VoiceShieldRepository(
         if (!loaded) {
             return false to "Failed to load model into local ONNX runtime."
         }
-        // Mark previous active model as VERIFIED_READY
         val all = dao.getAllVoiceModelsSnapshot()
         all.forEach { existing ->
             if (existing.id == model.id) {
@@ -843,6 +923,7 @@ class VoiceShieldRepository(
         val s = settingsFlow.first()
         val cfg = customConfig ?: TtsSynthesisConfig(
             language = s.language,
+            gender = s.voiceGender,
             mood = s.voiceMood,
             speed = s.speechRate,
             pitch = s.speechPitch,

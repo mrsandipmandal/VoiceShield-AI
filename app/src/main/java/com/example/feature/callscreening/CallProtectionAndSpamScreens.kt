@@ -24,21 +24,20 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dialpad
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Report
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
@@ -69,10 +68,11 @@ import androidx.compose.ui.unit.dp
 import com.example.core.database.CallerRuleEntity
 import com.example.core.database.ScreenedCallEntity
 import com.example.domain.model.CallerRuleType
+import com.example.domain.model.CallingArchitectureMode
 import com.example.domain.model.CapabilitySupportStatus
 import com.example.domain.model.DeviceAudioCapabilities
 import com.example.domain.model.FallbackCallAction
-import com.example.domain.model.SpamClassification
+import com.example.domain.model.SipRegistrationState
 import com.example.domain.model.UnknownNumberAction
 import com.example.domain.model.VoiceShieldSettings
 import com.example.feature.common.CapabilityStatusBadge
@@ -88,7 +88,9 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Screen 2: Call Protection + RoleManager (Call Screening & Default Dialer) + Integrated Dial Pad & InCall UI.
+ * Screen 2: Calling Modes & SIP Setup —
+ * Mode 1 (SIM Cellular CallScreeningService + Default Dialer InCallService) &
+ * Mode 2 (RFC 3261 SIP/VoIP Account Registration + G.711 RTP Media Stream).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -96,7 +98,11 @@ fun CallProtectionScreen(
     settings: VoiceShieldSettings,
     capabilities: DeviceAudioCapabilities,
     activeCall: ActiveTelecomCallState,
+    sipRegistrationState: SipRegistrationState,
+    sipStatusMessage: String,
+    sipLocalPort: Int,
     onUpdateSettings: ((VoiceShieldSettings) -> VoiceShieldSettings) -> Unit,
+    onRegisterSip: () -> Unit,
     onRefreshCapabilities: () -> Unit,
     onShowBanner: (String) -> Unit
 ) {
@@ -104,11 +110,18 @@ fun CallProtectionScreen(
     val roleManager = remember { context.getSystemService(RoleManager::class.java) }
     var dialPadNumber by remember { mutableStateOf("") }
 
+    var sipUsernameInput by remember(settings.sipUsername) { mutableStateOf(settings.sipUsername) }
+    var sipPasswordInput by remember(settings.sipPassword) { mutableStateOf(settings.sipPassword) }
+    var sipDomainInput by remember(settings.sipDomain) { mutableStateOf(settings.sipDomain) }
+    var sipPortInput by remember(settings.sipPort) { mutableStateOf(settings.sipPort.toString()) }
+
     val roleLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
         onRefreshCapabilities()
     }
+
+    val sipBadgeStatus = sipRegistrationState.statusBadge
 
     Column(
         modifier = Modifier
@@ -123,9 +136,173 @@ fun CallProtectionScreen(
             InCallControlCard(activeCall = activeCall)
         }
 
+        // Calling Architecture Mode Selector (Dual Mode vs Mode 1 vs Mode 2)
         SectionHeader(
-            title = "Android Telecom Roles",
-            subtitle = "Request official CallScreeningService and optional Default Dialer roles"
+            title = "Calling Architecture Mode",
+            subtitle = "Select Mode 1 (SIM Cellular Screening), Mode 2 (SIP/VoIP AI Receptionist), or Dual-Mode"
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CallingArchitectureMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = settings.callingMode == mode,
+                            onClick = { onUpdateSettings { it.copy(callingMode = mode) } },
+                            label = { Text(mode.displayName) },
+                            modifier = Modifier.testTag("calling_mode_${mode.name}")
+                        )
+                    }
+                }
+                Text(
+                    text = settings.callingMode.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = EmeraldShield
+                )
+            }
+        }
+
+        // Mode 2: SIP/VoIP AI Receptionist Account & RTP Media Setup
+        SectionHeader(
+            title = "Mode 2: SIP/VoIP AI Receptionist (RFC 3261 + RTP)",
+            subtitle = "Full bidirectional G.711 PCMU audio stream for TTS greeting injection & remote caller recording"
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, EmeraldShield.copy(alpha = 0.5f), MaterialTheme.shapes.medium)
+                .testTag("sip_account_config_card")
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "SIP Status: ${sipRegistrationState.label}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = EmeraldShield,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "$sipStatusMessage • Local UDP Port: $sipLocalPort",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    CapabilityStatusBadge(status = sipBadgeStatus)
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Enable SIP/VoIP AI Receptionist", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Listens for SIP INVITE packets, answers with 200 OK + SDP, streams offline TTS, and records remote RTP audio",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.sipEnabled,
+                        onCheckedChange = { enabled -> onUpdateSettings { it.copy(sipEnabled = enabled) } },
+                        modifier = Modifier.testTag("sip_enable_switch")
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = sipDomainInput,
+                        onValueChange = { sipDomainInput = it },
+                        label = { Text("SIP Server / Domain") },
+                        placeholder = { Text("127.0.0.1 or sip.linphone.org") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(2f)
+                            .testTag("sip_domain_input")
+                    )
+                    OutlinedTextField(
+                        value = sipPortInput,
+                        onValueChange = { sipPortInput = it },
+                        label = { Text("Port") },
+                        placeholder = { Text("5060") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("sip_port_input")
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = sipUsernameInput,
+                        onValueChange = { sipUsernameInput = it },
+                        label = { Text("SIP Username") },
+                        placeholder = { Text("voiceshield") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("sip_username_input")
+                    )
+                    OutlinedTextField(
+                        value = sipPasswordInput,
+                        onValueChange = { sipPasswordInput = it },
+                        label = { Text("SIP Password (Optional)") },
+                        placeholder = { Text("Digest MD5 secret") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("sip_password_input")
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        val portNum = sipPortInput.toIntOrNull()?.coerceIn(1024, 65535) ?: 5060
+                        onUpdateSettings {
+                            it.copy(
+                                sipDomain = sipDomainInput.ifBlank { "127.0.0.1" },
+                                sipPort = portNum,
+                                sipUsername = sipUsernameInput.ifBlank { "voiceshield" },
+                                sipPassword = sipPasswordInput
+                            )
+                        }
+                        onRegisterSip()
+                        onShowBanner("SIP account configuration saved & registration refreshed.")
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldShield),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("register_sip_button")
+                ) {
+                    Icon(Icons.Default.Router, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Save & Register SIP Account")
+                }
+            }
+        }
+
+        // Mode 1: SIM Cellular Call Screening & Default Dialer Roles
+        SectionHeader(
+            title = "Mode 1: SIM Cellular Telecom Roles",
+            subtitle = "CallScreeningService for unknown/spam filtering + optional Default Dialer InCallService"
         )
 
         Card(
@@ -179,7 +356,7 @@ fun CallProtectionScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Optional Default Dialer Role", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Enables InCallService UI, incoming/ongoing call controls, and programmatic call answer/disconnect.",
+                            "Enables InCallService UI, incoming/ongoing call controls, and cellular answer/disconnect. Note: Standard Android OS blocks cellular call audio uplink/downlink.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -278,7 +455,7 @@ fun CallProtectionScreen(
                     )
                 }
 
-                Text("Hardware Limitation Fallback Action", style = MaterialTheme.typography.titleSmall)
+                Text("Mode 1 Cellular Hardware Limitation Fallback Action", style = MaterialTheme.typography.titleSmall)
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -492,7 +669,7 @@ fun SpamCallHistoryScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    "No screened calls recorded yet. Incoming calls screened by CallScreeningService or the Simulator appear here.",
+                    "No screened calls recorded yet. Incoming calls screened by CallScreeningService or the SIP Receptionist appear here.",
                     modifier = Modifier.padding(16.dp)
                 )
             }

@@ -22,11 +22,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PhoneCallback
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
@@ -56,6 +53,7 @@ import com.example.domain.model.GreetingLengthMode
 import com.example.domain.model.GreetingTarget
 import com.example.domain.model.ReceptionistSessionState
 import com.example.domain.model.ReceptionistStage
+import com.example.domain.model.SipRegistrationState
 import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceShieldSettings
 import com.example.feature.common.AudioWaveformVisualizer
@@ -67,8 +65,8 @@ import com.example.ui.theme.EmeraldShield
 import java.util.UUID
 
 /**
- * Screen 3: Voice Receptionist — Interactive Call & Receptionist Simulator, Greeting Script Manager,
- * Multi-Language Greeting Editor, Consent Workflow, and TTS Preview.
+ * Screen 3: AI Voice Receptionist — Real Mode 2 SIP/RTP Receptionist Session Runner,
+ * Multi-Language Greeting Editor (Bengali, English, Hindi), Consent Workflow, and TTS Preview.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -76,6 +74,8 @@ fun VoiceReceptionistScreen(
     settings: VoiceShieldSettings,
     scripts: List<GreetingScriptEntity>,
     sessionState: ReceptionistSessionState,
+    sipRegistrationState: SipRegistrationState,
+    sipLocalPort: Int,
     isTtsSpeaking: Boolean,
     onUpdateSettings: ((VoiceShieldSettings) -> VoiceShieldSettings) -> Unit,
     onSaveScript: (GreetingScriptEntity) -> Unit,
@@ -106,10 +106,10 @@ fun VoiceReceptionistScreen(
             .testTag("voice_receptionist_screen"),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. Interactive Call & Receptionist Simulator Card
+        // 1. Live SIP/RTP AI Receptionist Call Runner
         SectionHeader(
-            title = "Interactive AI Receptionist Simulator",
-            subtitle = "Test screening, auto-answer delay, local TTS greeting, consent, live mic recording & AES-GCM storage"
+            title = "Mode 2: SIP/RTP AI Voice Receptionist",
+            subtitle = "Real UDP SIP INVITE -> 200 OK -> Outgoing G.711 RTP TTS Greeting -> Incoming RTP Caller Audio Recording"
         )
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -137,13 +137,24 @@ fun VoiceReceptionistScreen(
                             color = if (sessionState.isActive) EmeraldShield else CyanTelemetry,
                             fontWeight = FontWeight.Bold
                         )
+                        Text(
+                            text = "SIP Endpoint: ${sipRegistrationState.label} (UDP Port $sipLocalPort) • RTP Packets: ${sessionState.rtpPacketsProcessed}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         if (sessionState.isActive) {
                             Text(
                                 text = "Recording: ${sessionState.elapsedSeconds}s / ${settings.maxRecordingDuration}s • Silence: ${sessionState.silenceSeconds}s / ${settings.silenceTimeout}s",
-                                style = MaterialTheme.typography.labelMedium
+                                style = MaterialTheme.typography.labelMedium,
+                                color = EmeraldShield
                             )
                         }
                     }
+                    Icon(
+                        imageVector = Icons.Default.Router,
+                        contentDescription = null,
+                        tint = if (sessionState.isActive) EmeraldShield else CyanTelemetry
+                    )
                 }
 
                 if (sessionState.isActive || sessionState.stage == ReceptionistStage.RECORDING_CALLER_AUDIO) {
@@ -158,7 +169,7 @@ fun VoiceReceptionistScreen(
                     OutlinedTextField(
                         value = simCallerNumber,
                         onValueChange = { simCallerNumber = it },
-                        label = { Text("Simulated Caller Number") },
+                        label = { Text("Incoming SIP Caller Number") },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
@@ -177,7 +188,7 @@ fun VoiceReceptionistScreen(
                 OutlinedTextField(
                     value = simCallerMessageHint,
                     onValueChange = { simCallerMessageHint = it },
-                    label = { Text("Simulated Caller Message Content (for Offline STT)") },
+                    label = { Text("Remote Caller Speech Streamed Over RTP (PCMU 8kHz)") },
                     maxLines = 2,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -188,7 +199,7 @@ fun VoiceReceptionistScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Simulate Caller Recording Consent Granted",
+                        text = "Remote Caller Grants Recording Consent",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Switch(
@@ -219,7 +230,7 @@ fun VoiceReceptionistScreen(
                         ) {
                             Icon(Icons.AutoMirrored.Filled.PhoneCallback, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            Text("Simulate Incoming Call")
+                            Text("Trigger Incoming SIP/RTP Call")
                         }
                     } else {
                         if (sessionState.stage == ReceptionistStage.RECORDING_CALLER_AUDIO) {
@@ -240,7 +251,7 @@ fun VoiceReceptionistScreen(
                         ) {
                             Icon(Icons.Default.Stop, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
-                            Text("Abort Session")
+                            Text("Disconnect SIP Call")
                         }
                     }
                 }
@@ -272,7 +283,7 @@ fun VoiceReceptionistScreen(
         // 2. Active Greeting & Conversation Script Editor
         SectionHeader(
             title = "Greeting & Conversation Scripts",
-            subtitle = "Customize Bengali, English, and Hindi scripts with mandatory recording disclosure"
+            subtitle = "Customize Bengali, English, and Hindi Automated Personal Assistant scripts"
         )
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -339,7 +350,7 @@ fun VoiceReceptionistScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Mandatory Recording Disclosure", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "Never start recording secretly — always inform the caller first",
+                            "Plays disclosure informing the caller that their message is being recorded",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -358,7 +369,7 @@ fun VoiceReceptionistScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Require Caller Consent Before Recording", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "Verifies caller consent before capturing audio frames",
+                            "If consent is required and refused, the call is not recorded",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

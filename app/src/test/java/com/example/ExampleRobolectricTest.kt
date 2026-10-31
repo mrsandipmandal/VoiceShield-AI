@@ -214,4 +214,50 @@ class ExampleRobolectricTest {
         assertEquals("Connected / Active", VoiceShieldInCallService.stateToLabel(Call.STATE_ACTIVE))
         assertEquals("Disconnected", VoiceShieldInCallService.stateToLabel(Call.STATE_DISCONNECTED))
     }
+
+    @Test
+    fun sipUserAgentAndG711RtpEngine_parsesSipInviteAndTranscodesTtsToPcmuFrames() {
+        runBlocking<Unit> {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val ttsEngine = LocalTtsEngine(context)
+            val wav16k = ttsEngine.generateExpressiveOfflineWav(
+                text = "নমস্কার! আমি একটি Automated Personal Assistant।",
+                speed = 1.0f,
+                pitch = 1.0f,
+                volume = 0.9f,
+                pauseMs = 250,
+                emphasis = 0.6f
+            )
+            val ulaw8k = com.example.telecom.sip.G711Codec.encodeWav16kToPcmu8k(wav16k)
+            assertTrue(ulaw8k.size > 1600)
+            val (decodedPcm16k, amp) = com.example.telecom.sip.G711Codec.decodePcmu8kToPcm16k(ulaw8k)
+            assertTrue(decodedPcm16k.size > 3200)
+            assertTrue(amp > 0.01f)
+
+            val rawInvite = buildString {
+                append("INVITE sip:voiceshield@127.0.0.1:5060 SIP/2.0\r\n")
+                append("Via: SIP/2.0/UDP 127.0.0.1:5090;branch=z9hG4bK-test123\r\n")
+                append("From: \"Courier\" <sip:+919831099887@127.0.0.1>;tag=from1\r\n")
+                append("To: <sip:voiceshield@127.0.0.1>\r\n")
+                append("Call-ID: call-test-999@127.0.0.1\r\n")
+                append("CSeq: 1 INVITE\r\n")
+                append("Content-Type: application/sdp\r\n\r\n")
+                append("v=0\r\n")
+                append("c=IN IP4 127.0.0.1\r\n")
+                append("m=audio 40100 RTP/AVP 0 101\r\n")
+            }
+            val lines = rawInvite.split("\r\n", "\n")
+            val invite = com.example.telecom.sip.SipUserAgentClient.parseIncomingInvite(
+                lines = lines,
+                rawSip = rawInvite,
+                senderAddress = java.net.InetAddress.getByName("127.0.0.1"),
+                senderPort = 5090
+            )
+            assertNotNull(invite)
+            assertEquals("call-test-999@127.0.0.1", invite!!.callId)
+            assertEquals("+919831099887", invite.callerNumberOrId)
+            assertEquals("Courier", invite.callerDisplayName)
+            assertEquals(40100, invite.remoteRtpPort)
+        }
+    }
 }

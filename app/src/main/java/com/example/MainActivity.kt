@@ -143,6 +143,9 @@ fun VoiceShieldMainApp(viewModel: VoiceShieldViewModel) {
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val isTtsSpeaking by viewModel.isTtsSpeaking.collectAsStateWithLifecycle()
     val capabilities by viewModel.capabilitiesState.collectAsStateWithLifecycle()
+    val sipRegistrationState by viewModel.sipRegistrationState.collectAsStateWithLifecycle()
+    val sipStatusMessage by viewModel.sipStatusMessage.collectAsStateWithLifecycle()
+    val sipLocalPort by viewModel.sipLocalPort.collectAsStateWithLifecycle()
     val activeTelecomCall by viewModel.activeTelecomCall.collectAsState()
     val statusBanner by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
     val highlightedMsgId by viewModel.highlightedMessageId.collectAsStateWithLifecycle()
@@ -396,13 +399,16 @@ fun VoiceShieldMainApp(viewModel: VoiceShieldViewModel) {
                         messages = messages,
                         voiceModels = voiceModels,
                         capabilities = capabilities,
+                        sipRegistrationState = sipRegistrationState,
+                        sipStatusMessage = sipStatusMessage,
+                        sipLocalPort = sipLocalPort,
                         onToggleProtection = { enabled ->
                             viewModel.updateSettings { it.copy(protectionEnabled = enabled) }
                         },
                         onNavigate = { viewModel.navigateTo(it) },
                         onQuickSimulateCall = {
                             viewModel.navigateTo(VoiceShieldScreen.VOICE_RECEPTIONIST)
-                            viewModel.triggerSimulatedIncomingCall(
+                            viewModel.triggerIncomingSipCall(
                                 callerNumber = "+919831099887",
                                 callerName = null,
                                 simulateConsent = true,
@@ -419,7 +425,11 @@ fun VoiceShieldMainApp(viewModel: VoiceShieldViewModel) {
                         settings = settings,
                         capabilities = capabilities,
                         activeCall = activeTelecomCall,
+                        sipRegistrationState = sipRegistrationState,
+                        sipStatusMessage = sipStatusMessage,
+                        sipLocalPort = sipLocalPort,
                         onUpdateSettings = { viewModel.updateSettings(it) },
+                        onRegisterSip = { viewModel.registerOrRefreshSipAccount() },
                         onRefreshCapabilities = { viewModel.refreshDeviceCapabilities() },
                         onShowBanner = { viewModel.showStatusBanner(it) }
                     )
@@ -428,6 +438,8 @@ fun VoiceShieldMainApp(viewModel: VoiceShieldViewModel) {
                         settings = settings,
                         scripts = greetingScripts,
                         sessionState = receptionistSession,
+                        sipRegistrationState = sipRegistrationState,
+                        sipLocalPort = sipLocalPort,
                         isTtsSpeaking = isTtsSpeaking,
                         onUpdateSettings = { viewModel.updateSettings(it) },
                         onSaveScript = { viewModel.saveGreetingScript(it) },
@@ -435,7 +447,7 @@ fun VoiceShieldMainApp(viewModel: VoiceShieldViewModel) {
                         onPreviewTts = { viewModel.previewTts(it) },
                         onStopTts = { viewModel.stopTtsPreview() },
                         onTriggerSimulatedCall = { num, name, consent, hint ->
-                            viewModel.triggerSimulatedIncomingCall(num, name, consent, hint)
+                            viewModel.triggerIncomingSipCall(num, name, consent, hint)
                         },
                         onFinishRecordingEarly = { viewModel.finishActiveRecordingEarly() },
                         onCancelSession = { viewModel.stopReceptionistSession() }

@@ -361,6 +361,12 @@ fun VoiceMessageInboxScreen(
                             )
 
                             if (hasEncryptedAudio) {
+                                com.example.feature.common.AudioWaveformVisualizer(
+                                    isActive = isThisPlaying,
+                                    amplitude = if (isThisPlaying) 0.78f else 0.25f,
+                                    barColor = if (isThisPlaying) EmeraldShield else CyanTelemetry
+                                )
+
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),

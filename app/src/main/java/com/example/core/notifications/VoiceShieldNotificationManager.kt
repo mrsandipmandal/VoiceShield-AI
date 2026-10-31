@@ -17,12 +17,17 @@ import com.example.R
 import com.example.core.database.VoiceMessageEntity
 import com.example.domain.model.RecordingStatus
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Manages Android Notifications for VoiceShield AI.
- * Strictly enforces:
- * - Title: "New Voice Message"
- * - Body: "Someone left a message from +91XXXXXXXXXX"
+ * Includes:
+ * - Caller number or SIP identity
+ * - Date and time
+ * - Recording duration
+ * - "New voice message received" / "Tap to Listen"
  * - Actions: Listen, Open message, Delete (with confirmation)
  * - NEVER sends a successful-message notification when no actual recording file exists.
  */
@@ -71,7 +76,7 @@ class VoiceShieldNotificationManager(
     }
 
     /**
-     * Validates whether a message qualifies for a "New Voice Message" notification.
+     * Validates whether a message qualifies for a "New voice message received" notification.
      * Returns false if no actual encrypted recording file exists on disk.
      */
     fun canSendVoiceMessageNotification(
@@ -86,7 +91,10 @@ class VoiceShieldNotificationManager(
     }
 
     /**
-     * Builds and dispatches the "New Voice Message" notification with Listen, Open, and Delete actions.
+     * Builds and dispatches the VoiceShield AI notification containing:
+     * - Title: "New voice message received"
+     * - Body: "+91XXXXXXXXXX • Tap to Listen (<duration>s • <date/time>)"
+     * - Actions: Listen, Open message, Delete
      */
     fun sendNewVoiceMessageNotification(
         message: VoiceMessageEntity,
@@ -107,8 +115,10 @@ class VoiceShieldNotificationManager(
         }
 
         val callerDisplay = message.callerNumber.ifBlank { "+91Unknown" }
-        val title = "New Voice Message"
-        val body = "Someone left a message from $callerDisplay"
+        val dateStr = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
+            .format(Date(message.callDateMillis))
+        val title = "New voice message received"
+        val body = "$callerDisplay • Tap to Listen (${message.messageDurationSeconds}s • $dateStr)"
 
         val listenIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -148,12 +158,14 @@ class VoiceShieldNotificationManager(
 
         val notification = NotificationCompat.Builder(context, CHANNEL_VOICE_MESSAGES)
             .setSmallIcon(android.R.drawable.stat_notify_voicemail)
+            .setSubText("VoiceShield AI")
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(
                 NotificationCompat.BigTextStyle().bigText(
                     buildString {
-                        append(body)
+                        append(callerDisplay)
+                        append("\nTap to Listen • Duration: ${message.messageDurationSeconds}s • $dateStr")
                         if (!message.transcription.isNullOrBlank()) {
                             append("\n")
                             append(message.transcription)
@@ -164,7 +176,7 @@ class VoiceShieldNotificationManager(
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
-            .setContentIntent(openPendingIntent)
+            .setContentIntent(listenPendingIntent) // Tapping notification directly plays the saved recording!
             .addAction(
                 android.R.drawable.ic_media_play,
                 context.getString(R.string.notification_action_listen),

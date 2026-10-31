@@ -14,6 +14,7 @@ import com.example.data.repository.VoiceShieldRepository
 import com.example.domain.model.CallerRuleType
 import com.example.domain.model.DeviceAudioCapabilities
 import com.example.domain.model.ReceptionistSessionState
+import com.example.domain.model.SipRegistrationState
 import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceMood
 import com.example.domain.model.VoiceShieldSettings
@@ -27,24 +28,24 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
- * All 12 required application screens plus the integrated Default Dialer / In-Call UI.
+ * All 12 required application screens plus the integrated Default Dialer / In-Call UI & SIP Receptionist.
  */
 enum class VoiceShieldScreen(
     val route: String,
     val title: String,
     val subtitle: String
 ) {
-    DASHBOARD("dashboard", "Dashboard", "Protection Command Center & Telemetry"),
-    CALL_PROTECTION("call_protection", "Call Protection", "Screening Rules, Dialer Role & Live Shield"),
-    VOICE_RECEPTIONIST("voice_receptionist", "Voice Receptionist", "Greeting Scripts, Consent & Interactive Simulator"),
-    TTS_VOICE_STUDIO("tts_voice_studio", "TTS Voice Studio", "12 Voice Moods, Prosody DSP & Live Preview"),
-    VOICE_MESSAGE_INBOX("voice_messages", "Voice Message Inbox", "AES-GCM Encrypted Recordings & Playback"),
-    SPAM_CALL_HISTORY("spam_history", "Spam Call History", "Screened Calls, Scores & Verification Logs"),
+    DASHBOARD("dashboard", "Dashboard", "SIP Receptionist, Cellular Shield & Live Telemetry"),
+    CALL_PROTECTION("call_protection", "Calling Modes & SIP Setup", "Mode 1 Cellular Screening & Mode 2 SIP/VoIP Account"),
+    VOICE_RECEPTIONIST("voice_receptionist", "AI Voice Receptionist", "SIP/RTP Automatic Answering, Scripts & Consent"),
+    TTS_VOICE_STUDIO("tts_voice_studio", "TTS Voice Studio", "Voice Gender, 12 Moods, Prosody & Offline Preview"),
+    VOICE_MESSAGE_INBOX("voice_messages", "Voice Message Inbox", "AES-GCM Encrypted Recordings & Waveform Player"),
+    SPAM_CALL_HISTORY("spam_history", "Spam Call History", "Screened Cellular & SIP Calls Log"),
     CONTACTS_ALLOWLIST("contacts_allowlist", "Contacts & Allowlist", "Trusted Numbers & Receptionist Bypass"),
     BLOCKLIST("blocklist", "Blocklist", "Blocked Numbers & User-Reported Spam"),
     MODEL_MANAGER("model_manager", "Model Manager", "Sherpa-ONNX Local Models & Checksum Verifier"),
-    SETTINGS("settings", "Settings", "All 24+ Configurable Receptionist & Telecom Variables"),
-    PERMISSIONS_COMPATIBILITY("permissions_compat", "Permissions & Compatibility", "5-Point Audio Capability Matrix & SIP/VoIP Guide"),
+    SETTINGS("settings", "Settings", "All Configurable Receptionist, SIP & Telecom Variables"),
+    PERMISSIONS_COMPATIBILITY("permissions_compat", "Permissions & Compatibility", "5-Point Audio Capability Matrix & SIP Architecture"),
     PRIVACY_DATA("privacy_data", "Privacy & Data Management", "Keystore Encryption, Retention & Zero-Cloud Controls")
 }
 
@@ -75,6 +76,10 @@ class VoiceShieldViewModel(
 
     val receptionistSessionState: StateFlow<ReceptionistSessionState> = repository.receptionistSession
 
+    val sipRegistrationState: StateFlow<SipRegistrationState> = repository.sipRegistrationState
+    val sipStatusMessage: StateFlow<String> = repository.sipStatusMessage
+    val sipLocalPort: StateFlow<Int> = repository.sipLocalPort
+
     val playbackState: StateFlow<PlaybackUiState> = repository.audioController.playbackState
 
     val isTtsSpeaking: StateFlow<Boolean> = repository.ttsEngine.isSpeaking
@@ -100,6 +105,10 @@ class VoiceShieldViewModel(
 
     fun refreshDeviceCapabilities() {
         _capabilitiesState.value = repository.getDeviceCapabilities()
+    }
+
+    fun registerOrRefreshSipAccount() {
+        repository.refreshSipRegistration()
     }
 
     fun clearStatusBanner() {
@@ -138,6 +147,7 @@ class VoiceShieldViewModel(
     fun updateSettings(transform: (VoiceShieldSettings) -> VoiceShieldSettings) {
         viewModelScope.launch {
             repository.settingsDataStore.updateSettings(transform)
+            repository.refreshSipRegistration()
         }
     }
 
@@ -168,19 +178,18 @@ class VoiceShieldViewModel(
         repository.ttsEngine.stopPlayback()
     }
 
-    // --- Interactive Receptionist & Screening Simulator ---
-    fun triggerSimulatedIncomingCall(
+    // --- Mode 2 Real SIP/RTP Incoming Call Trigger ---
+    fun triggerIncomingSipCall(
         callerNumber: String,
         callerName: String?,
         simulateConsent: Boolean,
         callerSpeechHint: String? = null
     ) {
-        repository.startReceptionistWorkflow(
+        repository.startRealSipLoopbackCallTest(
             callerNumber = callerNumber,
             callerName = callerName,
-            isSimulatedCall = true,
             simulateCallerConsent = simulateConsent,
-            simulatedCallerSpeechHint = callerSpeechHint
+            callerSpeechHint = callerSpeechHint
         )
     }
 
@@ -357,7 +366,8 @@ class VoiceShieldViewModel(
     fun resetSettingsToDefaults() {
         viewModelScope.launch {
             repository.settingsDataStore.resetToDefaults()
-            _statusBannerMessage.value = "Restored all 24+ settings to factory defaults."
+            repository.refreshSipRegistration()
+            _statusBannerMessage.value = "Restored all settings to factory defaults."
         }
     }
 

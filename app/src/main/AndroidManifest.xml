@@ -2,7 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Telecom & Call Screening Permissions -->
+    <!-- Network Permissions for Mode 2: SIP/VoIP & RTP Media Streams -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Telecom & Call Screening Permissions for Mode 1: Cellular Integration -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
@@ -11,7 +16,7 @@
     <!-- Optional Contact Lookup for Known Caller Bypass -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
-    <!-- Audio & Microphone for Receptionist / Simulator Recording -->
+    <!-- Audio & Microphone -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
@@ -19,6 +24,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
@@ -71,7 +77,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Android CallScreeningService (RoleManager.ROLE_CALL_SCREENING) -->
+        <!-- Mode 1: Android CallScreeningService (RoleManager.ROLE_CALL_SCREENING) -->
         <service
             android:name=".telecom.screening.VoiceShieldCallScreeningService"
             android:exported="true"
@@ -81,7 +87,7 @@
             </intent-filter>
         </service>
 
-        <!-- Android InCallService (RoleManager.ROLE_DIALER) -->
+        <!-- Mode 1: Android InCallService (RoleManager.ROLE_DIALER) -->
         <service
             android:name=".telecom.incall.VoiceShieldInCallService"
             android:exported="true"
@@ -97,6 +103,12 @@
                 <action android:name="android.telecom.InCallService" />
             </intent-filter>
         </service>
+
+        <!-- Mode 2: SIP/VoIP AI Receptionist Foreground Service -->
+        <service
+            android:name=".telecom.sip.SipReceptionistForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Notification Action BroadcastReceiver -->
         <receiver

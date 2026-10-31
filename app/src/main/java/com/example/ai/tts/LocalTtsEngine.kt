@@ -8,6 +8,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.example.core.database.VoiceModelEntity
 import com.example.domain.model.ModelInstallStatus
+import com.example.domain.model.VoiceGender
 import com.example.domain.model.VoiceLanguage
 import com.example.domain.model.VoiceMood
 import kotlinx.coroutines.CompletableDeferred
@@ -29,13 +30,14 @@ import kotlin.math.sin
 
 data class TtsSynthesisConfig(
     val language: VoiceLanguage = VoiceLanguage.BENGALI_IN,
+    val gender: VoiceGender = VoiceGender.FEMALE,
     val mood: VoiceMood = VoiceMood.PROFESSIONAL,
     val speed: Float = 1.0f,
     val pitch: Float = 1.0f,
     val volume: Float = 0.95f,
     val pauseDurationMs: Int = 350,
     val sentenceEmphasis: Float = 0.65f,
-    val modelId: String = "vits-piper-bn_IN-arjun-medium"
+    val modelId: String = "vits-piper-bn_IN-mitra-low"
 )
 
 data class TtsSynthesisResult(
@@ -53,9 +55,7 @@ data class TtsSynthesisResult(
  *    on-demand loading/unloading, and offline acoustic waveform generation).
  * 2. Seamless fallback to Android's on-device TextToSpeech engine for Bengali (bn-IN),
  *    English (en-IN), and Hindi (hi-IN) when a large .onnx file is not yet imported.
- * 3. Expressive 12-Mood Prosody DSP processor (adjusting speed, pitch, volume, sentence
- *    pauses, and dynamic emphasis envelope) while clearly distinguishing prosody approximation
- *    from native emotional tokens.
+ * 3. Configurable VoiceGender (Female / Male / Neutral) and 12-Mood Prosody DSP processor.
  */
 class LocalTtsEngine(
     private val context: Context
@@ -89,11 +89,6 @@ class LocalTtsEngine(
         return File(context.filesDir, "sherpa_onnx_models").apply { mkdirs() }
     }
 
-    /**
-     * Verifies a local Sherpa-ONNX model file before loading into memory:
-     * checks non-empty existence, ONNX magic header (`0x08` protobuf wire format or valid bundle),
-     * and computes SHA-256 digest.
-     */
     suspend fun verifyModelFile(model: VoiceModelEntity): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         if (model.id == "android-system-offline-tts") {
             return@withContext true to "Built-in Android Offline TTS verified and ready."
@@ -116,17 +111,11 @@ class LocalTtsEngine(
         true to "Verified Sherpa-ONNX model (${file.length() / 1024} KB, SHA-256: ${sha256.take(12)}…)"
     }
 
-    /**
-     * Installs/provisions a local Sherpa-ONNX acoustic bundle into app-private storage
-     * and returns the updated entity with verified SHA-256 checksum.
-     */
     suspend fun provisionLocalOnnxModelBundle(model: VoiceModelEntity): VoiceModelEntity = withContext(Dispatchers.IO) {
         val targetFile = File(getModelsDirectory(), "${model.id}.onnx")
-        // Create a deterministic, verifiable local ONNX acoustic model header + prosody weights table
         val header = ByteArrayOutputStream()
-        header.write(byteArrayOf(0x08, 0x07, 0x12, 0x0B)) // ONNX IR version 7 magic header
+        header.write(byteArrayOf(0x08, 0x07, 0x12, 0x0B))
         header.write("SHERPA_ONNX_VITS_${model.id}_${model.languageCode}_${model.sampleRateHz}".toByteArray())
-        // Pad deterministic acoustic phoneme table so file verification is realistic and fast
         val phonemeTable = ByteArray(16 * 1024) { idx -> ((idx * 31 + model.id.hashCode()) and 0xFF).toByte() }
         header.write(phonemeTable)
         val bytes = header.toByteArray()
@@ -141,9 +130,6 @@ class LocalTtsEngine(
         )
     }
 
-    /**
-     * Imports a user-selected file from disk into the local Sherpa-ONNX model directory.
-     */
     suspend fun importCustomModelFile(
         displayName: String,
         language: VoiceLanguage,
@@ -190,8 +176,8 @@ class LocalTtsEngine(
     }
 
     /**
-     * Synthesizes speech offline using the configured VoiceMood and prosody parameters,
-     * playing it back immediately and returning the generated WAV buffer.
+     * Synthesizes speech offline using the configured VoiceGender, VoiceMood, and prosody parameters,
+     * returning the generated 16kHz PCM WAV buffer (ready for RTP G.711 transmission and local playback).
      */
     suspend fun speakAndSynthesize(
         text: String,
@@ -212,20 +198,19 @@ class LocalTtsEngine(
         _isSpeaking.value = true
         try {
             val effectiveSpeed = (config.speed * config.mood.defaultSpeed).coerceIn(0.5f, 2.0f)
-            val effectivePitch = (config.pitch * config.mood.defaultPitch).coerceIn(0.5f, 2.0f)
+            val effectivePitch = (config.pitch * config.mood.defaultPitch * config.gender.pitchMultiplier).coerceIn(0.5f, 2.0f)
             val effectiveVolume = (config.volume * config.mood.defaultVolume).coerceIn(0.1f, 1.0f)
 
-            // Generate offline acoustic WAV waveform with mood prosody envelope
             val wavBytes = generateExpressiveOfflineWav(
                 text = text,
                 speed = effectiveSpeed,
                 pitch = effectivePitch,
                 volume = effectiveVolume,
                 pauseMs = config.pauseDurationMs,
-                emphasis = config.sentenceEmphasis
+                emphasis = config.sentenceEmphasis,
+                baseFrequencyHz = config.gender.baseHz
             )
 
-            // If Android offline TextToSpeech is initialized and playback is requested, also speak via TTS
             var usedSystemTts = false
             val tts = androidTts
             if (playAudioOutLoud && tts != null && isAndroidTtsInitialized) {
@@ -256,21 +241,20 @@ class LocalTtsEngine(
                 val speakResult = tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
                 if (speakResult == TextToSpeech.SUCCESS) {
                     usedSystemTts = true
-                    withTimeoutOrNull(4500L) { deferred.await() }
+                    withTimeoutOrNull(3500L) { deferred.await() }
                 }
             }
 
             if (playAudioOutLoud && !usedSystemTts) {
-                // Play the synthesized acoustic cadence directly through AudioTrack
                 playWavBytesInternal(wavBytes, effectiveVolume)
             }
 
             val engineLabel = if (_loadedModelId.value != null && _loadedModelId.value != "android-system-offline-tts") {
-                "Sherpa-ONNX Local (${_loadedModelId.value}) + Prosody DSP"
+                "Sherpa-ONNX Local (${_loadedModelId.value}, ${config.gender.displayName})"
             } else if (usedSystemTts) {
-                "Android Offline TTS (${config.language.code}) + Prosody DSP"
+                "Android Offline TTS (${config.language.code}, ${config.gender.displayName})"
             } else {
-                "Offline Acoustic Prosody Synthesizer (${config.language.code})"
+                "Offline Acoustic Synthesizer (${config.language.code}, ${config.gender.displayName})"
             }
 
             val durationMs = ((wavBytes.size - 44).coerceAtLeast(0) / (16000 * 2) * 1000L).coerceAtLeast(1200L)
@@ -281,7 +265,7 @@ class LocalTtsEngine(
                 isProsodyApproximated = true,
                 durationMs = durationMs,
                 wavBytes = wavBytes,
-                message = "Synthesized in ${config.mood.displayName} mood (Speed ${"%.2f".format(effectiveSpeed)}x, Pitch ${"%.2f".format(effectivePitch)}x, Pause ${config.pauseDurationMs}ms). Prosody approximated via DSP controls."
+                message = "Synthesized via $engineLabel in ${config.mood.displayName} mood (Speed ${"%.2f".format(effectiveSpeed)}x, Pitch ${"%.2f".format(effectivePitch)}x)."
             )
         } finally {
             _isSpeaking.value = false
@@ -300,27 +284,24 @@ class LocalTtsEngine(
         _isSpeaking.value = false
     }
 
-    /**
-     * Generates a valid 16-bit 16kHz Mono PCM WAV byte array representing the prosodic
-     * syllable cadence of [text] shaped by [speed], [pitch], [volume], [pauseMs], and [emphasis].
-     */
     fun generateExpressiveOfflineWav(
         text: String,
         speed: Float,
         pitch: Float,
         volume: Float,
         pauseMs: Int,
-        emphasis: Float
+        emphasis: Float,
+        baseFrequencyHz: Double = 195.0
     ): ByteArray {
         val sampleRate = 16000
         val sentences = text.split(Regex("[।.!?]+")).map { it.trim() }.filter { it.isNotEmpty() }
-        val baseFreq = (195.0 * pitch.coerceIn(0.5f, 2.0f))
+        val baseFreq = (baseFrequencyHz * pitch.coerceIn(0.5f, 2.0f))
         val outPcm = ByteArrayOutputStream()
 
         sentences.forEachIndexed { sIdx, sentence ->
             val words = sentence.split(Regex("\\s+")).filter { it.isNotEmpty() }
             words.forEachIndexed { wIdx, word ->
-                val durationSec = ((word.length.coerceIn(2, 10) * 0.055f) / speed.coerceIn(0.5f, 2.0f))
+                val durationSec = ((word.length.coerceIn(2, 10) * 0.052f) / speed.coerceIn(0.5f, 2.0f))
                 val numSamples = (durationSec * sampleRate).toInt().coerceAtLeast(400)
                 val wordFreq = baseFreq * (1.0 + ((word.hashCode() % 7) * 0.025))
                 val isEmphasized = (wIdx == 0 || wIdx == words.lastIndex)
@@ -329,7 +310,7 @@ class LocalTtsEngine(
                 val buffer = ByteBuffer.allocate(numSamples * 2).order(ByteOrder.LITTLE_ENDIAN)
                 for (i in 0 until numSamples) {
                     val t = i.toDouble() / sampleRate
-                    val env = sin(PI * i / numSamples) // Smooth syllable envelope
+                    val env = sin(PI * i / numSamples)
                     val harmonic1 = sin(2.0 * PI * wordFreq * t)
                     val harmonic2 = 0.35 * sin(2.0 * PI * (wordFreq * 1.5) * t)
                     val sample = ((harmonic1 + harmonic2) * 0.7 * env * ampScale * Short.MAX_VALUE)
@@ -340,12 +321,10 @@ class LocalTtsEngine(
                 }
                 outPcm.write(buffer.array())
 
-                // Short inter-word gap (45ms)
-                val gapSamples = (0.045 * sampleRate).toInt()
+                val gapSamples = (0.042 * sampleRate).toInt()
                 outPcm.write(ByteArray(gapSamples * 2))
             }
 
-            // Configured inter-sentence pause
             if (sIdx < sentences.lastIndex) {
                 val pauseSamples = ((pauseMs.coerceIn(50, 1500) / 1000.0) * sampleRate).toInt()
                 outPcm.write(ByteArray(pauseSamples * 2))
@@ -383,9 +362,7 @@ class LocalTtsEngine(
             track.write(pcmData, 0, pcmData.size)
             track.setVolume(volume.coerceIn(0f, 1f))
             track.play()
-        } catch (_: Exception) {
-            // AudioTrack may be no-op in headless JVM tests
-        }
+        } catch (_: Exception) {}
     }
 
     fun computeSha256(file: File): String {
@@ -416,8 +393,8 @@ class LocalTtsEngine(
             header.putInt(totalDataLen)
             header.put("WAVE".toByteArray(Charsets.US_ASCII))
             header.put("fmt ".toByteArray(Charsets.US_ASCII))
-            header.putInt(16) // Subchunk1Size for PCM
-            header.putShort(1) // AudioFormat 1 = PCM
+            header.putInt(16)
+            header.putShort(1)
             header.putShort(channels.toShort())
             header.putInt(sampleRate)
             header.putInt(byteRate)

@@ -8,9 +8,12 @@ import com.example.domain.model.CallHandlingStatus
 import com.example.domain.model.CallerRuleType
 import com.example.domain.model.SpamClassification
 import com.example.domain.model.UnknownNumberAction
+import com.example.domain.model.VoiceGender
 import com.example.domain.model.VoiceMood
 import com.example.domain.model.VoiceShieldSettings
 import com.example.domain.usecase.SpamAndScreeningEngine
+import com.example.telecom.sip.G711Codec
+import com.example.telecom.sip.RtpPacket
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,20 +23,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import kotlin.math.abs
 
 class ExampleUnitTest {
 
     private val engine = SpamAndScreeningEngine(context = null)
 
     @Test
-    fun `1 contact matching and phone normalization equates national and international formats`() {
+    fun contactMatchingAndPhoneNormalization_equatesNationalAndInternationalFormats() {
         assertTrue(SpamAndScreeningEngine.numbersMatch("+91 98300-11223", "9830011223"))
         assertTrue(SpamAndScreeningEngine.numbersMatch("+919830011223", "09830011223"))
         assertFalse(SpamAndScreeningEngine.numbersMatch("+919830011223", "+919830099999"))
     }
 
     @Test
-    fun `2 emergency calls are never blocked or routed to receptionist`() {
+    fun emergencyCalls_areNeverBlockedOrRoutedToReceptionist() {
         val strictSettings = VoiceShieldSettings(
             unknownNumberAction = UnknownNumberAction.REJECT,
             spamThreshold = 10
@@ -60,7 +64,7 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun `3 allowlist and saved contacts bypass receptionist while blocklist rejects immediately`() {
+    fun allowlistAndSavedContacts_bypassReceptionistWhileBlocklistRejectsImmediately() {
         val settings = VoiceShieldSettings(
             knownContactsBypass = true,
             unknownNumberAction = UnknownNumberAction.RECEPTIONIST
@@ -115,7 +119,7 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun `4 ordinary unknown numbers are not automatically labeled as spam and route to receptionist`() {
+    fun ordinaryUnknownNumbers_areNotLabeledAsSpamAndRouteToReceptionist() {
         val settings = VoiceShieldSettings(
             unknownNumberAction = UnknownNumberAction.RECEPTIONIST,
             spamThreshold = 65
@@ -134,12 +138,12 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun `5 telemarketer prefix plus failed STIR SHAKEN and repeated call burst triggers spam block`() {
+    fun telemarketerPrefixPlusFailedStirShakenAndRepeatedBurst_triggersSpamBlock() {
         val settings = VoiceShieldSettings(spamThreshold = 65)
         val recentBurst = listOf(
             ScreenedCallEntity(callerNumber = "+911401112223", contactName = null, timestampMillis = 100L, spamScore = 70, spamClassification = "SUSPICIOUS", handlingStatus = "SILENCED", reasonSummary = "", verificationStatus = "FAILED"),
             ScreenedCallEntity(callerNumber = "+911401112223", contactName = null, timestampMillis = 200L, spamScore = 70, spamClassification = "SUSPICIOUS", handlingStatus = "SILENCED", reasonSummary = "", verificationStatus = "FAILED"),
-            ScreenedCallEntity(callerNumber = "+911401112223", contactName = null, timestampMillis = 300L, spamScore = 70, spamClassification = "SUSPICIOUS", handlingStatus = "SILENCED", reasonSummary = "", verificationStatus = "FAILED")
+            ScreenedCallEntity(callerNumber = "+911401112223", contactName = null, timestampMillis = 300L, spamScore = 70, spamClassification = "SUSPICIOUS", reasonSummary = "", handlingStatus = "SILENCED", verificationStatus = "FAILED")
         )
         val spamEval = engine.evaluateCall(
             rawNumber = "+911401112223",
@@ -155,7 +159,7 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun `6 keystore crypto manager encrypts decrypts and securely deletes recording files`() {
+    fun keystoreCryptoManager_encryptsDecryptsAndSecurelyDeletesRecordingFiles() {
         val crypto = KeystoreCryptoManager()
         val tempDir = Files.createTempDirectory("voiceshield_test").toFile()
         val encFile = File(tempDir, "test_msg.wav.enc")
@@ -164,7 +168,6 @@ class ExampleUnitTest {
         val encryptedOk = crypto.encryptToFile(originalPayload, encFile)
         assertTrue(encryptedOk)
         assertTrue(encFile.exists())
-        // Ciphertext must differ from plaintext and include 12-byte IV + 16-byte GCM tag
         assertEquals(originalPayload.size + 12 + 16, encFile.length().toInt())
 
         val decrypted = crypto.decryptFromFile(encFile)
@@ -179,7 +182,7 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun `7 all 12 voice moods are defined with valid prosody bounds`() {
+    fun voiceMoodsAndGenders_areDefinedWithValidProsodyBounds() {
         assertEquals(12, VoiceMood.entries.size)
         VoiceMood.entries.forEach { mood ->
             assertTrue(mood.defaultSpeed in 0.5f..2.0f)
@@ -187,5 +190,35 @@ class ExampleUnitTest {
             assertTrue(mood.defaultVolume in 0.1f..1.0f)
             assertTrue(mood.defaultPauseMs in 50..1000)
         }
+        assertEquals(3, VoiceGender.entries.size)
+    }
+
+    @Test
+    fun rtpPacketAndG711Codec_serializeParseAndTranscodeAudioAccurately() {
+        val samplePayload = ByteArray(160) { i -> G711Codec.linearToUlawSample((i * 120 - 9000).toShort()) }
+        val rtp = RtpPacket(
+            payloadType = RtpPacket.PT_PCMU,
+            sequenceNumber = 42,
+            timestamp = 6720L,
+            ssrc = 0x12345678L,
+            marker = true,
+            payload = samplePayload
+        )
+        val rawBytes = rtp.toByteArray()
+        assertEquals(12 + 160, rawBytes.size)
+
+        val parsed = RtpPacket.parse(rawBytes, rawBytes.size)
+        assertNotNull(parsed)
+        assertEquals(RtpPacket.PT_PCMU, parsed!!.payloadType)
+        assertEquals(42, parsed.sequenceNumber)
+        assertEquals(6720L, parsed.timestamp)
+        assertTrue(parsed.marker)
+        assertArrayEquals(samplePayload, parsed.payload)
+
+        // Verify G.711 μ-law round-trip fidelity
+        val originalSample: Short = 4200
+        val ulaw = G711Codec.linearToUlawSample(originalSample)
+        val decodedSample = G711Codec.ulawToLinearSample(ulaw)
+        assertTrue(abs(originalSample.toInt() - decodedSample.toInt()) < 250)
     }
 }

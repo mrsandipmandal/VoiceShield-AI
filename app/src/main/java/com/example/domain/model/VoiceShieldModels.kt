@@ -11,6 +11,51 @@ enum class CapabilitySupportStatus(val label: String) {
 }
 
 /**
+ * Two Independent Calling Architecture Modes:
+ * - Mode 1: SIM Cellular Call Integration (CallScreeningService + optional Default Dialer InCallService)
+ * - Mode 2: SIP/VoIP AI Receptionist (Full automatic answer, outgoing RTP TTS, incoming RTP caller recording)
+ */
+enum class CallingArchitectureMode(val displayName: String, val description: String) {
+    DUAL_ACTIVE(
+        "Dual Active (Cellular Screening + SIP AI Receptionist)",
+        "Mode 1 screens cellular calls; Mode 2 answers SIP/VoIP calls with two-way RTP TTS & recording"
+    ),
+    MODE_2_SIP_VOIP(
+        "Mode 2: SIP/VoIP AI Receptionist Only",
+        "Full automatic voice receptionist over RFC 3261 SIP + RTP G.711 audio streams"
+    ),
+    MODE_1_CELLULAR_SIM(
+        "Mode 1: SIM Cellular Call Integration Only",
+        "CallScreeningService & optional Default Dialer InCallService without SIP"
+    )
+}
+
+enum class SipRegistrationState(val label: String, val statusBadge: CapabilitySupportStatus) {
+    REGISTERED("SIP Registered (200 OK)", CapabilitySupportStatus.SUPPORTED),
+    REGISTERED_LOOPBACK_READY("SIP Ready (UDP Loopback & PBX Active)", CapabilitySupportStatus.SUPPORTED),
+    REGISTERING("Registering SIP...", CapabilitySupportStatus.LIMITED),
+    UNREGISTERED("SIP Unregistered", CapabilitySupportStatus.LIMITED),
+    REGISTRATION_FAILED("SIP Registration Error", CapabilitySupportStatus.UNSUPPORTED)
+}
+
+data class SipAccountConfig(
+    val enabled: Boolean = true,
+    val username: String = "voiceshield_ext101",
+    val password: String = "vs_sip_secret",
+    val serverDomain: String = "127.0.0.1",
+    val serverPort: Int = 5060,
+    val localSipPort: Int = 0,
+    val displayName: String = "VoiceShield AI Assistant",
+    val autoAnswerSipCalls: Boolean = true
+)
+
+enum class VoiceGender(val displayName: String, val pitchMultiplier: Float, val baseHz: Double) {
+    FEMALE("Female Voice", 1.12f, 225.0),
+    MALE("Male Voice", 0.92f, 145.0),
+    NEUTRAL("Neutral Voice", 1.0f, 185.0)
+}
+
+/**
  * 12 Selectable Voice Mood Presets with prosody parameters and synthesis metadata.
  */
 enum class VoiceMood(
@@ -162,7 +207,7 @@ enum class VoiceLanguage(
 }
 
 enum class UnknownNumberAction(val displayName: String, val description: String) {
-    RECEPTIONIST("AI Voice Receptionist", "Answer (when supported), play greeting, and record message"),
+    RECEPTIONIST("AI Voice Receptionist", "Answer (via SIP/VoIP or supported mode), play TTS greeting, and record caller message"),
     ALLOW("Allow Normal Ring", "Let unknown calls ring normally after spam check"),
     SILENCE("Silence Ringtone", "Allow the call to proceed silently without ringing"),
     REJECT("Reject Immediately", "Disconnect unknown numbers automatically")
@@ -193,15 +238,16 @@ enum class RecordingStatus(val label: String) {
 }
 
 enum class ConsentStatus(val label: String) {
-    CONSENT_GRANTED("Consent Granted"),
+    CONSENT_GRANTED("Consent Granted (DTMF / Voice)"),
     DISCLOSURE_PLAYED_IMPLICIT("Disclosure Played (Implicit)"),
     CONSENT_DECLINED("Consent Declined"),
     NOT_APPLICABLE("Not Applicable")
 }
 
 enum class CallHandlingStatus(val label: String) {
-    RECEPTIONIST_COMPLETED("Handled by Voice Receptionist"),
-    RECEPTIONIST_FALLBACK("Receptionist Fallback (Hardware Limit)"),
+    RECEPTIONIST_COMPLETED("Handled by AI Voice Receptionist"),
+    SIP_RECEPTIONIST_COMPLETED("Handled by Mode 2 SIP/VoIP Receptionist"),
+    RECEPTIONIST_FALLBACK("Cellular Fallback (Hardware Limit)"),
     SCREENED_ALLOWED("Screened & Allowed"),
     SCREENED_SILENCED("Screened & Silenced"),
     SCREENED_REJECTED("Screened & Blocked"),
@@ -259,19 +305,21 @@ data class DeviceAudioCapabilities(
 )
 
 /**
- * All 24+ Configurable Settings persisted via Jetpack DataStore.
+ * All 24+ Configurable Settings plus SIP/VoIP & Voice Gender settings persisted via Jetpack DataStore.
  */
 data class VoiceShieldSettings(
     val protectionEnabled: Boolean = true,
+    val callingMode: CallingArchitectureMode = CallingArchitectureMode.DUAL_ACTIVE,
     val autoAnswerEnabled: Boolean = true,
-    val answerDelaySeconds: Int = 3,
+    val answerDelaySeconds: Int = 2,
     val greetingEnabled: Boolean = true,
-    val greetingText: String = "নমস্কার! আপনি VoiceShield AI-এর মাধ্যমে যোগাযোগ করেছেন। অনুগ্রহ করে আপনার নাম এবং কী কারণে ফোন করেছেন তা বলুন। আপনার বার্তা রেকর্ড করা হতে পারে। সম্মতি থাকলে নির্দেশ অনুসরণ করুন।",
+    val greetingText: String = "নমস্কার! আমি একটি Automated Personal Assistant। আপনি যাঁর সঙ্গে যোগাযোগ করতে চাইছেন, তিনি এখন ফোন ধরতে পারছেন না। অনুগ্রহ করে আপনার নাম এবং বার্তাটি বলুন।",
     val knownCallerGreetingText: String = "নমস্কার! আমি এখন একটু ব্যস্ত আছি। অনুগ্রহ করে আপনার বার্তাটি বলুন, আমি শীঘ্রই কল ব্যাক করব।",
     val closingMessageText: String = "ধন্যবাদ। আপনার বার্তাটি সংরক্ষিত হয়েছে। শুভ দিন!",
     val greetingLengthMode: GreetingLengthMode = GreetingLengthMode.LONG,
     val language: VoiceLanguage = VoiceLanguage.BENGALI_IN,
-    val voiceModel: String = "vits-piper-bn_IN-arjun-medium",
+    val voiceModel: String = "vits-piper-bn_IN-mitra-low",
+    val voiceGender: VoiceGender = VoiceGender.FEMALE,
     val voiceMood: VoiceMood = VoiceMood.PROFESSIONAL,
     val speechRate: Float = 1.0f,
     val speechPitch: Float = 0.98f,
@@ -294,24 +342,38 @@ data class VoiceShieldSettings(
     val workingHoursEndHour: Int = 18,
     val fallbackCallAction: FallbackCallAction = FallbackCallAction.SILENCE_AND_NOTIFY,
     val maximumStoredMessages: Int = 100,
-    val darkThemeEnabled: Boolean = true
-)
+    val darkThemeEnabled: Boolean = true,
+    val sipEnabled: Boolean = true,
+    val sipUsername: String = "voiceshield_ext101",
+    val sipPassword: String = "vs_sip_secret",
+    val sipDomain: String = "127.0.0.1",
+    val sipPort: Int = 5060
+) {
+    fun toSipAccountConfig(): SipAccountConfig = SipAccountConfig(
+        enabled = sipEnabled,
+        username = sipUsername,
+        password = sipPassword,
+        serverDomain = sipDomain,
+        serverPort = sipPort,
+        autoAnswerSipCalls = autoAnswerEnabled
+    )
+}
 
 /**
- * Interactive Receptionist State Machine states.
+ * Interactive & SIP Receptionist State Machine states.
  */
 enum class ReceptionistStage(val stepTitle: String) {
     IDLE("Ready / Standby"),
-    SCREENING_CALLER("1. Screening Caller & Spam Rules"),
-    WAITING_ANSWER_DELAY("2. Waiting Auto-Answer Delay"),
-    ANSWERING_CALL("3. Answering Call"),
-    PLAYING_TTS_GREETING("4. Playing Local TTS Greeting & Disclosure"),
-    AWAITING_CALLER_CONSENT("5. Verifying Caller Consent"),
-    RECORDING_CALLER_AUDIO("6. Recording Caller Voice Message"),
-    PLAYING_CLOSING_SCRIPT("7. Playing Closing Message"),
-    ENCRYPTING_AND_SAVING("8. AES-GCM Encrypting & Saving to Room"),
-    COMPLETED_SUCCESS("9. Call Disconnected & Notification Sent"),
-    FALLBACK_UNSUPPORTED("Hardware Audio Limitation Fallback Applied"),
+    SCREENING_CALLER("1. Screening Unknown Caller & Spam Rules"),
+    WAITING_ANSWER_DELAY("2. Ringing / Auto-Answer Delay"),
+    ANSWERING_CALL("3. Auto-Answering Incoming Call (SIP 200 OK + SDP)"),
+    PLAYING_TTS_GREETING("4. Streaming Offline AI TTS Greeting to Caller"),
+    AWAITING_CALLER_CONSENT("5. Verifying Recording Disclosure & Consent"),
+    RECORDING_CALLER_AUDIO("6. Capturing Incoming Caller RTP Voice Stream"),
+    PLAYING_CLOSING_SCRIPT("7. Streaming Closing Message"),
+    ENCRYPTING_AND_SAVING("8. AES-256-GCM Encrypting & Saving Message"),
+    COMPLETED_SUCCESS("9. Auto-Disconnected (BYE) & Notification Sent"),
+    FALLBACK_UNSUPPORTED("Mode 1 Cellular Audio Limitation Fallback Applied"),
     CALL_REJECTED_OR_BYPASSED("Call Handled by Screening Policy")
 }
 
@@ -319,11 +381,13 @@ data class ReceptionistSessionState(
     val isActive: Boolean = false,
     val callerNumber: String = "",
     val callerName: String? = null,
-    val isSimulatedCall: Boolean = true,
+    val transportLabel: String = "Mode 2: SIP/VoIP RTP Stream",
+    val isSimulatedCall: Boolean = false,
     val stage: ReceptionistStage = ReceptionistStage.IDLE,
     val elapsedSeconds: Int = 0,
     val silenceSeconds: Int = 0,
     val currentAmplitude: Float = 0f,
+    val rtpPacketsProcessed: Int = 0,
     val spamScore: Int = 0,
     val spamClassification: SpamClassification = SpamClassification.LOW_RISK,
     val statusLog: List<String> = emptyList(),
